@@ -1,0 +1,4 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY iamspectre /usr/local/bin/iamspectre
+USER nonroot:nonroot
+ENTRYPOINT ["iamspectre"]
