@@ -1,5 +1,6 @@
 # IAMSpectre
 
+[![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
 [![CI](https://github.com/ppiankov/iamspectre/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/iamspectre/actions/workflows/ci.yml)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -209,6 +210,25 @@ Key design decisions:
 - GCP uses `google.golang.org/api` REST clients with interface-based mocking.
 - Severity levels: critical > high > medium > low (numeric rank for filtering).
 - `Recommendation` field instead of cost estimation -- IAM findings are security risks, not dollar waste.
+
+## Project Status
+
+**Status: Beta** · **v0.1.0** · Pre-1.0
+
+| Milestone | Status |
+|-----------|--------|
+| AWS scanners: users, roles, policies (7 finding types) | Complete |
+| GCP scanners: service accounts, bindings (3 finding types) | Complete |
+| Credential report parsing and key age analysis | Complete |
+| Cross-account trust and wildcard policy detection | Complete |
+| 4 output formats (text, JSON, SARIF, SpectreHub) | Complete |
+| Config file + init command with IAM policy generation | Complete |
+| CI pipeline (test/lint/build) | Complete |
+| Homebrew + Docker distribution | Complete |
+| API stability guarantees | Partial |
+| v1.0 release | Planned |
+
+Pre-1.0: CLI flags and config schemas may change between minor versions. JSON output structure (`spectre/v1`) is stable.
 
 ## Known limitations
 
