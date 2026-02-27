@@ -3,14 +3,14 @@ package report
 import "encoding/json"
 
 type spectrehubEnvelope struct {
-	Schema string `json:"$schema"`
+	Schema string `json:"schema"`
 	Data
 }
 
-// Generate produces spectrehub/v1 envelope JSON output.
+// Generate produces spectre/v1 envelope JSON output.
 func (r *SpectreHubReporter) Generate(data Data) error {
 	envelope := spectrehubEnvelope{
-		Schema: "spectrehub/v1",
+		Schema: "spectre/v1",
 		Data:   data,
 	}
 	enc := json.NewEncoder(r.Writer)
