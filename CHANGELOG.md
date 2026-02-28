@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 3 GCP finding types: STALE_SA, STALE_SA_KEY, OVERPRIVILEGED_SA
 - 4 severity levels: critical, high, medium, low with `--severity-min` filtering
 - Analyzer with severity filtering and summary aggregation (by severity, resource type, finding ID)
-- 4 output formats: text (terminal table), JSON (`spectre/v1` envelope), SARIF (v2.1.0), SpectreHub (`spectrehub/v1`)
+- 4 output formats: text (terminal table), JSON (`spectre/v1` envelope), SARIF (v2.1.0), SpectreHub (`spectre/v1`)
 - AWS credential report CSV parser with handling of N/A, not_supported, no_information values
 - AWS policy document parser with StringOrSlice and Principal custom JSON unmarshalers
 - Cross-account trust detection by comparing trust policy principal account IDs
