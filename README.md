@@ -5,13 +5,13 @@
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Cross-cloud IAM auditor. Finds unused, over-permissioned, and stale identities across AWS and GCP.
+Cross-cloud IAM auditor. Finds unused, over-permissioned, and stale identities across AWS, GCP, and Azure AD.
 
 Part of the [Spectre family](https://github.com/ppiankov) of infrastructure cleanup tools.
 
 ## What it is
 
-IAMSpectre scans IAM resources across AWS and GCP for security and compliance risks. It checks credential reports, key ages, role usage, policy documents, and service account bindings to identify stale users, unused roles, wildcard policies, missing MFA, and overprivileged service accounts. Each finding includes a severity level and actionable recommendation.
+IAMSpectre scans IAM resources across AWS, GCP, and Azure AD for security and compliance risks. It checks credential reports, key ages, role usage, policy documents, service account bindings, app registrations, and directory roles to identify stale users, unused roles, wildcard policies, missing MFA, expired secrets, and overprivileged identities. Each finding includes a severity level and actionable recommendation.
 
 ## What it is NOT
 
@@ -53,6 +53,9 @@ iamspectre aws --profile production
 # Audit GCP IAM
 iamspectre gcp --project my-project-id
 
+# Audit Azure AD / Entra ID
+iamspectre azure --tenant my-tenant-id
+
 # JSON output for automation
 iamspectre aws --format json --output report.json
 
@@ -62,11 +65,11 @@ iamspectre aws --format sarif --output results.sarif
 # Only show high and critical findings
 iamspectre aws --severity-min high
 
-# Generate config and IAM policy
+# Generate config and IAM policies
 iamspectre init
 ```
 
-Requires valid cloud credentials (AWS profile/environment or GCP application-default credentials).
+Requires valid cloud credentials (AWS profile/environment, GCP application-default credentials, or Azure CLI/service principal).
 
 ## What it audits
 
@@ -89,6 +92,21 @@ Requires valid cloud credentials (AWS profile/environment or GCP application-def
 | Service accounts | `STALE_SA` | Disabled service account | high |
 | Service account keys | `STALE_SA_KEY` | User-managed key older than stale_days | critical |
 | IAM bindings | `OVERPRIVILEGED_SA` | Service account with Owner/Editor role | critical |
+
+### Azure AD / Entra ID
+
+| Resource | Finding | Signal | Severity |
+|----------|---------|--------|----------|
+| Users | `STALE_USER` | No sign-in > stale_days | high |
+| Guest users | `STALE_GUEST_USER` | External user with no sign-in > stale_days | high |
+| Users | `NO_MFA` | No MFA methods registered | critical |
+| Tenant | `LEGACY_AUTH` | Security defaults disabled | high |
+| App registrations | `STALE_APP` | All credentials expired | high |
+| App registrations | `EXPIRED_SECRET` | Credential past expiry | critical |
+| App registrations | `EXPIRING_SECRET` | Credential expiring within 30 days | medium |
+| Service principals | `STALE_SP` | No sign-in > stale_days | high |
+| Service principals | `OVERPRIVILEGED_APP` | Dangerous Graph API permissions | critical |
+| Directory roles | `UNUSED_ROLE` | Role assigned to inactive principal | medium |
 
 ## Usage
 
@@ -122,6 +140,22 @@ iamspectre gcp [flags]
 | `-o, --output` | stdout | Output file path |
 | `--timeout` | `5m` | Scan timeout |
 
+### Azure
+
+```bash
+iamspectre azure [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tenant` | | Azure tenant ID |
+| `--stale-days` | `90` | Inactivity threshold (days) |
+| `--severity-min` | `low` | Minimum severity: critical, high, medium, low |
+| `--format` | `text` | Output format: text, json, sarif, spectrehub |
+| `-o, --output` | stdout | Output file path |
+| `--timeout` | `5m` | Scan timeout |
+| `--include-guests` | `true` | Include guest/external users in audit |
+
 ### Other commands
 
 | Command | Description |
@@ -136,6 +170,7 @@ IAMSpectre reads `.iamspectre.yaml` from the current directory:
 ```yaml
 profile: production
 project: my-gcp-project
+tenant_id: my-azure-tenant-id
 stale_days: 90
 severity_min: medium
 format: json
@@ -164,6 +199,11 @@ IAMSpectre requires read-only access. Run `iamspectre init` to generate the mini
 - `iam.serviceAccounts.list`, `iam.serviceAccountKeys.list`
 - `resourcemanager.projects.getIamPolicy`
 
+### Azure
+
+- `User.Read.All`, `Application.Read.All`, `Directory.Read.All`
+- `AuditLog.Read.All`, `UserAuthenticationMethod.Read.All`
+
 ## Output formats
 
 **Text** (default): Human-readable table with severity, resource, and recommendation.
@@ -180,7 +220,7 @@ IAMSpectre requires read-only access. Run `iamspectre init` to generate the mini
 iamspectre/
 ├── cmd/iamspectre/main.go          # Entry point (LDFLAGS)
 ├── internal/
-│   ├── commands/                   # Cobra CLI: aws, gcp, init, version
+│   ├── commands/                   # Cobra CLI: aws, gcp, azure, init, version
 │   ├── iam/                        # Shared types: Finding, Severity, Scanner
 │   ├── aws/                        # AWS scanners: users, roles, policies
 │   │   ├── credential_report.go    # Credential Report CSV parser
@@ -193,6 +233,12 @@ iamspectre/
 │   │   ├── service_account.go      # Stale SAs, stale SA keys
 │   │   ├── binding.go              # Overprivileged SA bindings
 │   │   └── scanner.go              # GCP scanner orchestrator
+│   ├── azure/                      # Azure AD scanners
+│   │   ├── user.go                 # Stale users, guests, no MFA, legacy auth
+│   │   ├── app.go                  # Stale apps, expired/expiring secrets
+│   │   ├── service_principal.go    # Stale SPs, overprivileged apps
+│   │   ├── role.go                 # Unused directory roles
+│   │   └── scanner.go              # Azure scanner orchestrator
 │   ├── analyzer/                   # Severity filtering, summary aggregation
 │   └── report/                     # Text, JSON, SARIF, SpectreHub reporters
 ├── Makefile
@@ -201,13 +247,14 @@ iamspectre/
 
 Key design decisions:
 
-- Subcommand-per-cloud (`aws`, `gcp`) because each cloud has fundamentally different IAM models.
-- `internal/iam/` holds shared types (Finding, Severity, Scanner interface) used by both clouds.
+- Subcommand-per-cloud (`aws`, `gcp`, `azure`) because each cloud has fundamentally different IAM models.
+- `internal/iam/` holds shared types (Finding, Severity, Scanner interface) used by all clouds.
 - Each scanner implements `Scanner` interface: `Scan(ctx, ScanConfig) (*ScanResult, error)`.
 - Bounded concurrency via `errgroup.SetLimit(5)`. Scanner errors are collected, not fatal.
 - AWS credential report is fetched once and shared across user-level checks.
 - AWS policy documents handle the "string or array" pattern via custom `StringOrSlice` JSON unmarshaler.
 - GCP uses `google.golang.org/api` REST clients with interface-based mocking.
+- Azure uses `azidentity` for auth + direct REST calls to Microsoft Graph API.
 - Severity levels: critical > high > medium > low (numeric rank for filtering).
 - `Recommendation` field instead of cost estimation -- IAM findings are security risks, not dollar waste.
 
@@ -219,6 +266,7 @@ Key design decisions:
 |-----------|--------|
 | AWS scanners: users, roles, policies (7 finding types) | Complete |
 | GCP scanners: service accounts, bindings (3 finding types) | Complete |
+| Azure AD scanners: users, apps, SPs, roles (10 finding types) | Complete |
 | Credential report parsing and key age analysis | Complete |
 | Cross-account trust and wildcard policy detection | Complete |
 | 4 output formats (text, JSON, SARIF, SpectreHub) | Complete |
@@ -232,12 +280,14 @@ Pre-1.0: CLI flags and config schemas may change between minor versions. JSON ou
 
 ## Known limitations
 
-- **Single account/project.** Scans one AWS account or GCP project at a time.
+- **Single account/project/tenant.** Scans one AWS account, GCP project, or Azure tenant at a time.
 - **No Policy Analyzer integration.** GCP service account "last used" detection relies on disabled status and key age, not the Policy Analyzer activity API.
 - **No group membership analysis.** Does not trace IAM group memberships to find inherited permissions.
 - **No resource-level policy analysis.** Only checks IAM policies, not S3 bucket policies, KMS key policies, etc.
 - **Trust policy parsing.** Cross-account trust detection checks `Principal.AWS` but does not evaluate complex condition expressions.
 - **GCP binding scope.** Only checks project-level IAM bindings, not folder or organization-level.
+- **Azure AD Premium P1.** Stale user/guest detection requires `signInActivity` (Azure AD Premium P1). Without P1, MFA and credential checks still work.
+- **Azure overprivileged detection.** Checks a static set of known dangerous Microsoft Graph API roles, not all possible permission combinations.
 
 ## License
 

@@ -38,6 +38,12 @@ const (
 	ResourceServiceAccount    ResourceType = "service_account"
 	ResourceServiceAccountKey ResourceType = "service_account_key"
 	ResourceIAMBinding        ResourceType = "iam_binding"
+
+	ResourceAzureUser             ResourceType = "azure_user"
+	ResourceAzureGuestUser        ResourceType = "azure_guest_user"
+	ResourceAzureAppRegistration  ResourceType = "azure_app_registration"
+	ResourceAzureServicePrincipal ResourceType = "azure_service_principal"
+	ResourceAzureDirectoryRole    ResourceType = "azure_directory_role"
 )
 
 // FindingID identifies the type of issue detected.
@@ -54,6 +60,14 @@ const (
 	FindingStaleSA           FindingID = "STALE_SA"
 	FindingStaleSAKey        FindingID = "STALE_SA_KEY"
 	FindingOverprivilegedSA  FindingID = "OVERPRIVILEGED_SA"
+
+	FindingStaleGuestUser    FindingID = "STALE_GUEST_USER"
+	FindingLegacyAuth        FindingID = "LEGACY_AUTH"
+	FindingStaleApp          FindingID = "STALE_APP"
+	FindingExpiredSecret     FindingID = "EXPIRED_SECRET"
+	FindingExpiringSecret    FindingID = "EXPIRING_SECRET"
+	FindingStaleSP           FindingID = "STALE_SP"
+	FindingOverprivilegedApp FindingID = "OVERPRIVILEGED_APP"
 )
 
 // Finding represents a single IAM audit finding.

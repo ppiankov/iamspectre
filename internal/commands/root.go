@@ -19,8 +19,8 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "iamspectre",
 	Short: "iamspectre — cross-cloud IAM auditor",
-	Long: `iamspectre audits IAM roles, policies, and service accounts across AWS and GCP
-for unused, over-permissioned, and stale identities.
+	Long: `iamspectre audits IAM roles, policies, and service accounts across AWS, GCP,
+and Azure AD for unused, over-permissioned, and stale identities.
 
 Each finding includes a severity level and actionable recommendation.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -48,6 +48,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose logging")
 	rootCmd.AddCommand(awsCmd)
 	rootCmd.AddCommand(gcpCmd)
+	rootCmd.AddCommand(azureCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(versionCmd)
 }
