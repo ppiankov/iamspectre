@@ -27,6 +27,10 @@ func enhanceError(action string, err error) error {
 		hint = "AWS API rate limit hit. Increase timeout or retry"
 	case strings.Contains(msg, "could not find default credentials"):
 		hint = "Configure GCP credentials: run 'gcloud auth application-default login' or set GOOGLE_APPLICATION_CREDENTIALS"
+	case strings.Contains(msg, "AADSTS"):
+		hint = "Azure AD authentication failed. Run 'az login' or set AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET"
+	case strings.Contains(msg, "Authorization_RequestDenied"):
+		hint = "Insufficient Graph API permissions. Grant the required API permissions in Azure AD app registration"
 	}
 
 	if hint != "" {

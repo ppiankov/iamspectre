@@ -115,5 +115,12 @@ func buildSARIFRules() []sarifRule {
 		{ID: string(iam.FindingStaleSA), ShortDescription: sarifMessage{Text: "Stale service account"}},
 		{ID: string(iam.FindingStaleSAKey), ShortDescription: sarifMessage{Text: "Stale service account key"}},
 		{ID: string(iam.FindingOverprivilegedSA), ShortDescription: sarifMessage{Text: "Overprivileged service account"}},
+		{ID: string(iam.FindingStaleGuestUser), ShortDescription: sarifMessage{Text: "Stale Azure AD guest user"}},
+		{ID: string(iam.FindingLegacyAuth), ShortDescription: sarifMessage{Text: "Legacy authentication not blocked"}},
+		{ID: string(iam.FindingStaleApp), ShortDescription: sarifMessage{Text: "Stale app registration"}},
+		{ID: string(iam.FindingExpiredSecret), ShortDescription: sarifMessage{Text: "Expired app credential"}},
+		{ID: string(iam.FindingExpiringSecret), ShortDescription: sarifMessage{Text: "Expiring app credential"}},
+		{ID: string(iam.FindingStaleSP), ShortDescription: sarifMessage{Text: "Stale service principal"}},
+		{ID: string(iam.FindingOverprivilegedApp), ShortDescription: sarifMessage{Text: "Overprivileged app permission"}},
 	}
 }

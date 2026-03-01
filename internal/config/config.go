@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Profile     string   `yaml:"profile"`
 	Project     string   `yaml:"project"`
+	TenantID    string   `yaml:"tenant_id"`
 	StaleDays   int      `yaml:"stale_days"`
 	SeverityMin string   `yaml:"severity_min"`
 	Format      string   `yaml:"format"`
