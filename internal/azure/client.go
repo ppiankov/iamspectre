@@ -135,7 +135,8 @@ func (g *graphClient) GetSecurityDefaults(ctx context.Context) (*SecurityDefault
 	if err != nil {
 		return nil, fmt.Errorf("get security defaults: %w", err)
 	}
-	defer body.Close()
+	// WO-5: ignore Close error explicitly to satisfy errcheck (read-only response body).
+	defer func() { _ = body.Close() }()
 
 	var p SecurityDefaultsPolicy
 	if err := json.NewDecoder(body).Decode(&p); err != nil {
@@ -172,7 +173,8 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 			return resp.Body, nil
 		}
 
-		resp.Body.Close()
+		// WO-5: ignore Close error explicitly to satisfy errcheck (non-OK body discarded before retry).
+		_ = resp.Body.Close()
 
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries-1 {
 			retryAfter := 5
@@ -190,7 +192,7 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 			continue
 		}
 
-		return nil, fmt.Errorf("Graph API returned %d for %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("graph API returned %d for %s", resp.StatusCode, url)
 	}
 
 	return nil, fmt.Errorf("max retries exceeded for %s", url)
@@ -206,7 +208,8 @@ func paginate[T any](ctx context.Context, g *graphClient, url string, out *[]T) 
 
 		var resp graphResponse[T]
 		err = json.NewDecoder(body).Decode(&resp)
-		body.Close()
+		// WO-5: ignore Close error explicitly to satisfy errcheck (page body fully decoded).
+		_ = body.Close()
 		if err != nil {
 			return fmt.Errorf("decode response: %w", err)
 		}

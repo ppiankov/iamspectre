@@ -30,6 +30,16 @@ brew tap ppiankov/tap
 brew install iamspectre
 ```
 
+### Windows
+
+Download the latest Windows `.zip` from [GitHub Releases](https://github.com/ppiankov/iamspectre/releases), extract `iamspectre.exe`, and add its folder to `PATH` or run it in place.
+
+```powershell
+.\iamspectre.exe scan --provider aws --format json
+```
+
+AWS and Azure credentials resolve through the official SDK default credential chains from standard Windows locations (`%USERPROFILE%\.aws\` and `az login`), so no extra configuration is needed.
+
 ### From source
 
 ```sh
