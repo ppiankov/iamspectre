@@ -129,13 +129,13 @@ func (g *graphClient) ListAuthenticationMethods(ctx context.Context, userID stri
 	return all, nil
 }
 
-// WO-5: keep Graph response cleanup explicit and lint-clean.
 func (g *graphClient) GetSecurityDefaults(ctx context.Context) (*SecurityDefaultsPolicy, error) {
 	url := graphBaseURL + "/policies/identitySecurityDefaultsEnforcementPolicy"
 	body, err := g.doRequest(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("get security defaults: %w", err)
 	}
+	// WO-5: ignore Close error explicitly to satisfy errcheck (read-only response body).
 	defer func() { _ = body.Close() }()
 
 	var p SecurityDefaultsPolicy
@@ -145,7 +145,6 @@ func (g *graphClient) GetSecurityDefaults(ctx context.Context) (*SecurityDefault
 	return &p, nil
 }
 
-// WO-5: keep Graph response cleanup explicit and lint-clean.
 // doRequest performs an authenticated GET request to Microsoft Graph.
 func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser, error) {
 	const maxRetries = 3
@@ -174,6 +173,7 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 			return resp.Body, nil
 		}
 
+		// WO-5: ignore Close error explicitly to satisfy errcheck (non-OK body discarded before retry).
 		_ = resp.Body.Close()
 
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries-1 {
@@ -198,7 +198,6 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 	return nil, fmt.Errorf("max retries exceeded for %s", url)
 }
 
-// WO-5: keep Graph response cleanup explicit and lint-clean.
 // paginate fetches all pages of a Graph API collection endpoint.
 func paginate[T any](ctx context.Context, g *graphClient, url string, out *[]T) error {
 	for url != "" {
@@ -209,6 +208,7 @@ func paginate[T any](ctx context.Context, g *graphClient, url string, out *[]T) 
 
 		var resp graphResponse[T]
 		err = json.NewDecoder(body).Decode(&resp)
+		// WO-5: ignore Close error explicitly to satisfy errcheck (page body fully decoded).
 		_ = body.Close()
 		if err != nil {
 			return fmt.Errorf("decode response: %w", err)
