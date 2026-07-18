@@ -129,6 +129,7 @@ func (g *graphClient) ListAuthenticationMethods(ctx context.Context, userID stri
 	return all, nil
 }
 
+// WO-5: keep Graph response cleanup explicit and lint-clean.
 func (g *graphClient) GetSecurityDefaults(ctx context.Context) (*SecurityDefaultsPolicy, error) {
 	url := graphBaseURL + "/policies/identitySecurityDefaultsEnforcementPolicy"
 	body, err := g.doRequest(ctx, url)
@@ -144,6 +145,7 @@ func (g *graphClient) GetSecurityDefaults(ctx context.Context) (*SecurityDefault
 	return &p, nil
 }
 
+// WO-5: keep Graph response cleanup explicit and lint-clean.
 // doRequest performs an authenticated GET request to Microsoft Graph.
 func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser, error) {
 	const maxRetries = 3
@@ -196,6 +198,7 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 	return nil, fmt.Errorf("max retries exceeded for %s", url)
 }
 
+// WO-5: keep Graph response cleanup explicit and lint-clean.
 // paginate fetches all pages of a Graph API collection endpoint.
 func paginate[T any](ctx context.Context, g *graphClient, url string, out *[]T) error {
 	for url != "" {
