@@ -5,6 +5,20 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-07-19
+
+### Fixed
+
+- SARIF reporter now surfaces sub-scanner errors (previously dropped), so partial-scan failures are visible to CI/CD consumers
+- SARIF driver name now reflects the actual tool metadata instead of a hardcoded literal, and canonical SARIF properties are protected from metadata collisions
+- Text reporter now includes the stable finding ID, scan timestamp, and active severity-min filter, and preserves scan errors when no findings are present
+- Cross-account trust findings are gated on assume-role actions to reduce false positives
+
+### Added
+
+- Wildcard-principal detection in cross-account role trust policies
+- Restraint-first severity assessment: findings may carry an evidence tier, reachability, blast radius, and per-authorization-layer evaluation, scored by a versioned severity rubric; findings without assessment metadata keep their existing severity (no change to current output)
+
 ## [0.2.2] - 2026-07-19
 
 ### Fixed

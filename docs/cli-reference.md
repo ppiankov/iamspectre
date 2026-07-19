@@ -133,11 +133,11 @@ IAMSpectre requires read-only access. Run `iamspectre init` to generate the mini
 
 ## Output formats
 
-**Text** (default): Human-readable table with severity, resource, and recommendation.
+**Text** (default): Human-readable table with severity, stable finding ID, resource, and recommendation. The header records the scan timestamp and the active severity-min filter.
 
 **JSON** (`--format json`): `spectre/v1` envelope with findings and summary.
 
-**SARIF** (`--format sarif`): SARIF v2.1.0 for GitHub Security tab integration.
+**SARIF** (`--format sarif`): SARIF v2.1.0 for GitHub Security tab integration. Sub-scanner errors are surfaced as SARIF notifications so partial-scan failures are visible to consumers.
 
 **SpectreHub** (`--format spectrehub`): `spectre/v1` envelope for SpectreHub ingestion.
 
