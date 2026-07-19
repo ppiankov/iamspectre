@@ -12,9 +12,23 @@ type sarifReport struct {
 	Runs    []sarifRun `json:"runs"`
 }
 
+// WO-32@v2: sarifRun carries execution notifications for partial scan failures.
 type sarifRun struct {
-	Tool    sarifTool     `json:"tool"`
-	Results []sarifResult `json:"results"`
+	Tool        sarifTool         `json:"tool"`
+	Results     []sarifResult     `json:"results"`
+	Invocations []sarifInvocation `json:"invocations,omitempty"` // WO-32@v2: expose partial scanner failures to SARIF consumers
+}
+
+// WO-32@v2: represent a failed scan execution without hiding the meaningful false value.
+type sarifInvocation struct {
+	ExecutionSuccessful        bool                `json:"executionSuccessful"`
+	ToolExecutionNotifications []sarifNotification `json:"toolExecutionNotifications,omitempty"`
+}
+
+// WO-32@v2: carry each scanner failure as a SARIF runtime notification.
+type sarifNotification struct {
+	Level   string       `json:"level"`
+	Message sarifMessage `json:"message"`
 }
 
 type sarifTool struct {
@@ -45,20 +59,34 @@ type sarifMessage struct {
 	Text string `json:"text"`
 }
 
-// Generate produces SARIF v2.1.0 output.
+// WO-30@v2: preserve report identity, failures, and canonical finding properties in SARIF.
 func (r *SARIFReporter) Generate(data Data) error {
 	results := make([]sarifResult, 0, len(data.Findings))
 	for _, f := range data.Findings {
-		props := map[string]any{
-			"resource_type":  string(f.ResourceType),
-			"resource_id":    f.ResourceID,
-			"recommendation": f.Recommendation,
-		}
-		if f.ResourceName != "" {
-			props["resource_name"] = f.ResourceName
-		}
+		f = iam.NormalizeSeverity(f) // WO-20@v3: direct reporter use must fail closed like analyzer output.
+		props := make(map[string]any, len(f.Metadata)+4)
 		for k, v := range f.Metadata {
 			props[k] = v
+		}
+		// WO-39: canonical fields win over arbitrary provider metadata.
+		props["resource_type"] = string(f.ResourceType)
+		props["resource_id"] = f.ResourceID
+		props["recommendation"] = f.Recommendation
+		if f.ResourceName != "" {
+			props["resource_name"] = f.ResourceName
+		} else {
+			delete(props, "resource_name")
+		}
+		// WO-20@v3: expose assessment inputs only when the finding carries assessment metadata.
+		if iam.HasAssessment(f) {
+			props["evidence_tier"] = f.EvidenceTier
+			props["state"] = f.State
+			props["reachability"] = f.Reachability
+			props["impact"] = f.Impact
+			props["blast_radius"] = f.BlastRadius
+			props["rubric_version"] = f.RubricVersion
+			props["evaluated_layers"] = f.EvaluatedLayers
+			props["effective_severity"] = f.Severity
 		}
 
 		results = append(results, sarifResult{
@@ -69,6 +97,21 @@ func (r *SARIFReporter) Generate(data Data) error {
 		})
 	}
 
+	var invocations []sarifInvocation
+	if len(data.Errors) > 0 {
+		notifications := make([]sarifNotification, 0, len(data.Errors))
+		for _, scanErr := range data.Errors {
+			notifications = append(notifications, sarifNotification{
+				Level:   "error",
+				Message: sarifMessage{Text: scanErr},
+			})
+		}
+		invocations = []sarifInvocation{{
+			ExecutionSuccessful:        false,
+			ToolExecutionNotifications: notifications,
+		}}
+	}
+
 	report := sarifReport{
 		Schema:  "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
 		Version: "2.1.0",
@@ -76,13 +119,14 @@ func (r *SARIFReporter) Generate(data Data) error {
 			{
 				Tool: sarifTool{
 					Driver: sarifDriver{
-						Name:           "iamspectre",
+						Name:           data.Tool,
 						Version:        data.Version,
 						InformationURI: "https://github.com/ppiankov/iamspectre",
 						Rules:          buildSARIFRules(),
 					},
 				},
-				Results: results,
+				Results:     results,
+				Invocations: invocations,
 			},
 		},
 	}
@@ -122,5 +166,6 @@ func buildSARIFRules() []sarifRule {
 		{ID: string(iam.FindingExpiringSecret), ShortDescription: sarifMessage{Text: "Expiring app credential"}},
 		{ID: string(iam.FindingStaleSP), ShortDescription: sarifMessage{Text: "Stale service principal"}},
 		{ID: string(iam.FindingOverprivilegedApp), ShortDescription: sarifMessage{Text: "Overprivileged app permission"}},
+		{ID: string(iam.FindingRootAccessKey), ShortDescription: sarifMessage{Text: "Root access key present"}}, // WO-20@v3: register the rubric's direct-harm finding
 	}
 }

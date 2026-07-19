@@ -290,3 +290,90 @@ func TestIsExternalAccount(t *testing.T) {
 		})
 	}
 }
+
+// WO-19@v3: concrete external trust must fail open unless its condition is provably bounded.
+func TestRoleScanner_CrossAccountTrustConditionClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		want      bool
+	}{
+		{"bounded external id suppresses", `,"Condition":{"StringEquals":{"sts:ExternalId":"customer-123"}}`, false},
+		{"inverted condition emits", `,"Condition":{"StringNotEquals":{"sts:ExternalId":"customer-123"}}`, true},
+		{"wildcard value emits", `,"Condition":{"StringEquals":{"sts:ExternalId":"*"}}`, true},
+		{"malformed value emits", `,"Condition":{"StringEquals":{"sts:ExternalId":42}}`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::999999999999:root"},"Action":"sts:AssumeRole"` + tt.condition + `}]}`
+			if got := hasCrossAccountTrustFinding(t, policy); got != tt.want {
+				t.Fatalf("finding = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-37@v2: literal wildcard trust follows the same bounded-condition gate as concrete principals.
+func TestRoleScanner_WildcardPrincipalTrust(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		want      bool
+	}{
+		{"unconditioned emits", ``, true},
+		{"bounded condition suppresses", `,"Condition":{"StringEquals":{"aws:PrincipalOrgID":"o-1234567890"}}`, false},
+		{"inverted condition emits", `,"Condition":{"StringNotEquals":{"aws:PrincipalOrgID":"o-1234567890"}}`, true},
+		{"empty condition emits", `,"Condition":{}`, true},
+		{"malformed condition emits", `,"Condition":{"StringEquals":{"sts:ExternalId":42}}`, true},
+		{"wildcard condition emits", `,"Condition":{"StringEquals":{"sts:ExternalId":"customer-*"}}`, true},
+		{"universal network emits", `,"Condition":{"IpAddress":{"aws:SourceIp":"0.0.0.0/0"}}`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"` + tt.condition + `}]}`
+			if got := hasCrossAccountTrustFinding(t, policy); got != tt.want {
+				t.Fatalf("finding = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-40: scanner findings require an action that actually grants sts:AssumeRole.
+func TestRoleScanner_CrossAccountTrustActionClassification(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		want   bool
+	}{
+		{"exact", `"sts:AssumeRole"`, true},
+		{"case insensitive", `"STS:ASSUMEROLE"`, true},
+		{"matching pattern", `"sts:Assume*"`, true},
+		{"matching list", `["sts:TagSession","sts:AssumeRole"]`, true},
+		{"unrelated", `"s3:GetObject"`, false},
+		{"tag session", `"sts:TagSession"`, false},
+		{"saml", `"sts:AssumeRoleWithSAML"`, false},
+		{"web identity", `"sts:AssumeRoleWithWebIdentity"`, false},
+		{"nonmatching list", `["sts:TagSession","sts:AssumeRoleWithSAML"]`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::999999999999:root"},"Action":` + tt.action + `}]}`
+			if got := hasCrossAccountTrustFinding(t, policy); got != tt.want {
+				t.Fatalf("finding = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-37@v2: exercise trust classification directly without scanner setup noise.
+func hasCrossAccountTrustFinding(t *testing.T, policy string) bool {
+	t.Helper()
+	result := &iam.ScanResult{}
+	scanner := &RoleScanner{accountID: "123456789012"}
+	encoded := url.QueryEscape(policy)
+	scanner.checkCrossAccountTrust(&encoded, "arn:aws:iam::123456789012:role/test", "test", result)
+	return findFinding(result.Findings, iam.FindingCrossAccountTrust) != nil
+}

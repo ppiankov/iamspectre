@@ -68,18 +68,95 @@ const (
 	FindingExpiringSecret    FindingID = "EXPIRING_SECRET"
 	FindingStaleSP           FindingID = "STALE_SP"
 	FindingOverprivilegedApp FindingID = "OVERPRIVILEGED_APP"
+	FindingRootAccessKey     FindingID = "ROOT_ACCESS_KEY" // WO-20@v3: reserve the rubric's tier-zero direct-harm exception.
 )
 
-// Finding represents a single IAM audit finding.
+// WO-20@v3: assessment types keep evidence claims and severity derivation machine-checkable.
+type EvidenceTier uint8
+
+// WO-20@v3: enumerate the evidence ladder used by rubric v1.
+const (
+	EvidenceTierFact EvidenceTier = iota
+	EvidenceTierPolicyShape
+	EvidenceTierContextualized
+	EvidenceTierAuthorizationLayers
+	EvidenceTierSimulated
+	EvidenceTierWitnessed
+)
+
+type FindingState string // WO-20@v3: distinguish complete conclusions from bounded uncertainty.
+
+// WO-20@v3: constrain assessment state to determinate or bounded uncertainty.
+const (
+	FindingStateDeterminate   FindingState = "determinate"
+	FindingStateIndeterminate FindingState = "indeterminate"
+)
+
+type Reachability string // WO-20@v3: separate authorization reachability from evidence strength.
+
+// WO-20@v3: keep reachability independent from evidence tier.
+const (
+	ReachabilityUnknown   Reachability = "unknown"
+	ReachabilityBlocked   Reachability = "blocked"
+	ReachabilityReachable Reachability = "reachable"
+)
+
+type BlastRadius string // WO-20@v3: version the scope adjustment independently from impact.
+
+// WO-20@v3: enumerate the v1 blast-radius adjustment inputs.
+const (
+	BlastRadiusLow      BlastRadius = "low"
+	BlastRadiusMedium   BlastRadius = "medium"
+	BlastRadiusHigh     BlastRadius = "high"
+	BlastRadiusCritical BlastRadius = "critical"
+)
+
+type LayerStatus string // WO-20@v3: prevent unevaluated authorization layers from appearing complete.
+
+// WO-20@v3: distinguish evaluated layers from unresolved or inapplicable ones.
+const (
+	LayerEvaluated     LayerStatus = "evaluated"
+	LayerNotApplicable LayerStatus = "not_applicable"
+	LayerUnresolved    LayerStatus = "unresolved"
+)
+
+type AuthorizationLayer string // WO-20@v3: name every layer considered by rubric v1.
+
+// WO-20@v3: enumerate every authorization layer required by rubric v1.
+const (
+	LayerIdentityPolicy      AuthorizationLayer = "identity_policy"
+	LayerResourcePolicy      AuthorizationLayer = "resource_policy"
+	LayerPermissionsBoundary AuthorizationLayer = "permissions_boundary"
+	LayerSCP                 AuthorizationLayer = "scp"
+	LayerRCP                 AuthorizationLayer = "rcp"
+	LayerSessionPolicy       AuthorizationLayer = "session_policy"
+	LayerExplicitDeny        AuthorizationLayer = "explicit_deny"
+	LayerRequestContext      AuthorizationLayer = "request_context"
+	LayerServiceEnforcement  AuthorizationLayer = "service_enforcement"
+)
+
+type RubricVersion string // WO-20@v3: make future severity changes explicit and compatible.
+
+// WO-20@v3: bind current assessment semantics to the first rubric version.
+const RubricVersionV1 RubricVersion = "v1"
+
+// WO-20@v3: Finding carries optional versioned assessment evidence alongside legacy fields.
 type Finding struct {
-	ID             FindingID      `json:"id"`
-	Severity       Severity       `json:"severity"`
-	ResourceType   ResourceType   `json:"resource_type"`
-	ResourceID     string         `json:"resource_id"`
-	ResourceName   string         `json:"resource_name,omitempty"`
-	Message        string         `json:"message"`
-	Recommendation string         `json:"recommendation"`
-	Metadata       map[string]any `json:"metadata,omitempty"`
+	ID              FindingID                          `json:"id"`
+	Severity        Severity                           `json:"severity"`
+	ResourceType    ResourceType                       `json:"resource_type"`
+	ResourceID      string                             `json:"resource_id"`
+	ResourceName    string                             `json:"resource_name,omitempty"`
+	Message         string                             `json:"message"`
+	Recommendation  string                             `json:"recommendation"`
+	Metadata        map[string]any                     `json:"metadata,omitempty"`
+	EvidenceTier    *EvidenceTier                      `json:"evidence_tier,omitempty"`    // WO-20@v3: nil preserves the legacy schema path; tier zero remains explicit.
+	State           FindingState                       `json:"state,omitempty"`            // WO-20@v3: surface indeterminate assessments without overclaiming.
+	Reachability    Reachability                       `json:"reachability,omitempty"`     // WO-20@v3: record unknown, blocked, or reachable independently.
+	Impact          Severity                           `json:"impact,omitempty"`           // WO-20@v3: retain pre-cap harm independently from effective severity.
+	BlastRadius     BlastRadius                        `json:"blast_radius,omitempty"`     // WO-20@v3: record the v1 scope adjustment input.
+	RubricVersion   RubricVersion                      `json:"rubric_version,omitempty"`   // WO-20@v3: bind assessment semantics to rubric v1.
+	EvaluatedLayers map[AuthorizationLayer]LayerStatus `json:"evaluated_layers,omitempty"` // WO-20@v3: expose complete authorization-layer coverage.
 }
 
 // ScanResult holds all findings from scanning IAM resources.

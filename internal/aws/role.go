@@ -118,15 +118,23 @@ func (s *RoleScanner) checkCrossAccountTrust(policyDoc *string, roleARN, roleNam
 		if stmt.Effect != "Allow" {
 			continue
 		}
+		if !stmt.HasAssumeRoleAction() { // WO-40: unrelated trust-policy actions cannot grant role assumption.
+			continue
+		}
 		if stmt.Principal == nil {
 			continue
 		}
 
-		for _, principal := range stmt.Principal.AWS {
+		principals := stmt.Principal.AWS
+		if stmt.Principal.Wildcard {
+			principals = append(principals, "*") // WO-37@v2: evaluate literal wildcard trust through the same condition gate.
+		}
+
+		for _, principal := range principals {
 			if !s.isExternalAccount(principal) {
 				continue
 			}
-			if stmt.Condition != nil {
+			if stmt.HasRestrictiveTrustCondition() { // WO-19@v3: unknown or broad conditions must fail open.
 				continue
 			}
 
