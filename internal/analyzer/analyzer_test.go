@@ -197,3 +197,35 @@ func TestAnalyze_AllFilteredOut(t *testing.T) {
 		t.Fatalf("expected 5 principals, got %d", analysis.Summary.TotalPrincipalsScanned)
 	}
 }
+
+// WO-20@v3: analyzer filters and summarizes effective severity without mutating input.
+func TestAnalyze_NormalizesEffectiveSeverityCopy(t *testing.T) {
+	layers := make(map[iam.AuthorizationLayer]iam.LayerStatus, len(iam.CanonicalLayers()))
+	for _, layer := range iam.CanonicalLayers() {
+		layers[layer] = iam.LayerEvaluated
+	}
+	input := iam.Finding{
+		ID: iam.FindingNoMFA, Severity: iam.SeverityCritical, ResourceType: iam.ResourceIAMUser,
+		EvidenceTier: func() *iam.EvidenceTier { tier := iam.EvidenceTierPolicyShape; return &tier }(), State: iam.FindingStateDeterminate,
+		Reachability: iam.ReachabilityReachable, Impact: iam.SeverityCritical,
+		BlastRadius: iam.BlastRadiusCritical, RubricVersion: iam.RubricVersionV1,
+		EvaluatedLayers: layers,
+	}
+	result := &iam.ScanResult{Findings: []iam.Finding{input}}
+
+	analysis := Analyze(result, AnalyzerConfig{SeverityMin: iam.SeverityHigh})
+	if len(analysis.Findings) != 1 || analysis.Findings[0].Severity != iam.SeverityHigh {
+		t.Fatalf("normalized findings = %#v", analysis.Findings)
+	}
+	if analysis.Summary.BySeverity["high"] != 1 {
+		t.Fatalf("severity summary = %#v", analysis.Summary.BySeverity)
+	}
+	if result.Findings[0].Severity != iam.SeverityCritical {
+		t.Fatalf("Analyze mutated input severity to %s", result.Findings[0].Severity)
+	}
+
+	filtered := Analyze(result, AnalyzerConfig{SeverityMin: iam.SeverityCritical})
+	if len(filtered.Findings) != 0 {
+		t.Fatalf("effective high finding passed critical filter: %#v", filtered.Findings)
+	}
+}

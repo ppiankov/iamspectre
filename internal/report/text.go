@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
@@ -29,7 +30,7 @@ func (ew *errWriter) println(s string) {
 	_, ew.err = fmt.Fprintln(ew.w, s)
 }
 
-// Generate produces a human-readable text report.
+// WO-31@v2: keep the text report self-describing and preserve partial-scan evidence.
 func (r *TextReporter) Generate(data Data) error {
 	w := &errWriter{w: r.Writer}
 
@@ -39,20 +40,27 @@ func (r *TextReporter) Generate(data Data) error {
 	w.printf("Target: %s\n", data.Target.Type)
 	w.printf("Cloud: %s\n", data.Config.Cloud)
 	w.printf("Stale threshold: %d days\n", data.Config.StaleDays)
+	w.printf("Scanned at: %s\n", data.Timestamp.UTC().Format(time.RFC3339))
+	if data.Config.SeverityMin != "" {
+		w.printf("Severity filter: %s\n", data.Config.SeverityMin)
+	}
 	w.println("")
 
 	if len(data.Findings) == 0 {
 		w.println("No findings.")
+		printTextSummary(w, data)
 		return w.err
 	}
 
 	tw := tabwriter.NewWriter(r.Writer, 0, 0, 2, ' ', 0)
 	ew := &errWriter{w: tw}
-	ew.println("SEVERITY\tTYPE\tRESOURCE\tMESSAGE\tRECOMMENDATION")
-	ew.println("--------\t----\t--------\t-------\t--------------")
+	// WO-34@v2: expose the stable finding classification in text output.
+	ew.println("FINDING_ID\tSEVERITY\tTYPE\tRESOURCE\tMESSAGE\tRECOMMENDATION")
+	ew.println("----------\t--------\t----\t--------\t-------\t--------------")
 
 	for _, f := range data.Findings {
-		ew.printf("%s\t%s\t%s\t%s\t%s\n",
+		ew.printf("%s\t%s\t%s\t%s\t%s\t%s\n",
+			f.ID,
 			severityLabel(f.Severity),
 			f.ResourceType,
 			truncate(f.ResourceID, 40),

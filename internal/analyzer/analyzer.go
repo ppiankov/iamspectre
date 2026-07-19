@@ -10,6 +10,7 @@ func Analyze(result *iam.ScanResult, cfg AnalyzerConfig) *AnalysisResult {
 
 	var filtered []iam.Finding
 	for _, f := range result.Findings {
+		f = iam.NormalizeSeverity(f) // WO-20@v3: filter and summarize the derived severity without mutating scanner output.
 		if iam.SeverityRank(f.Severity) >= minRank {
 			filtered = append(filtered, f)
 		}

@@ -178,3 +178,108 @@ func TestPrincipal_MultipleAWS(t *testing.T) {
 		t.Fatalf("expected 2 AWS principals, got %d", len(p.AWS))
 	}
 }
+
+// WO-19@v3: pin every accepted condition family and representative fail-open shape.
+func TestPolicyStatementHasRestrictiveTrustCondition(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		want      bool
+	}{
+		{"external id scalar", `{"StringEquals":{"sts:ExternalId":"customer-123"}}`, true},
+		{"external id bounded list", `{"StringEquals":{"sts:ExternalId":["one","two"]}}`, true},
+		{"organization", `{"StringEquals":{"aws:PrincipalOrgID":"o-1234567890"}}`, true},
+		{"organization list", `{"StringEquals":{"aws:PrincipalOrgID":["o-1234567890","o-abcdefghij"]}}`, true},
+		{"source account", `{"StringEquals":{"aws:SourceAccount":"123456789012"}}`, true},
+		{"source account list", `{"StringEquals":{"aws:SourceAccount":["123456789012","999999999999"]}}`, true},
+		{"source arn", `{"ArnEquals":{"aws:SourceArn":"arn:aws:lambda:us-east-1:123456789012:function:worker"}}`, true},
+		{"source arn equals list", `{"ArnEquals":{"aws:SourceArn":["arn:aws:lambda:us-east-1:123456789012:function:one","arn:aws:lambda:us-east-1:123456789012:function:two"]}}`, true},
+		{"bounded arn like", `{"ArnLike":{"aws:SourceArn":"arn:aws:s3:::named-bucket"}}`, true},
+		{"bounded arn like list", `{"ArnLike":{"aws:SourceArn":["arn:aws:s3:::bucket-one","arn:aws:s3:::bucket-two"]}}`, true},
+		{"ipv4 cidr", `{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"}}`, true},
+		{"ipv4 cidr list", `{"IpAddress":{"aws:SourceIp":["10.0.0.0/8","192.0.2.0/24"]}}`, true},
+		{"ipv6 cidr", `{"IpAddress":{"aws:SourceIp":"2001:db8::/32"}}`, true},
+		{"ipv6 cidr list", `{"IpAddress":{"aws:SourceIp":["2001:db8::/32","2001:db8:1::/48"]}}`, true},
+		{"absent", `null`, false},
+		{"empty condition", `{}`, false},
+		{"inverted", `{"StringNotEquals":{"sts:ExternalId":"customer-123"}}`, false},
+		{"null", `{"Null":{"sts:ExternalId":"false"}}`, false},
+		{"if exists", `{"StringEqualsIfExists":{"sts:ExternalId":"customer-123"}}`, false},
+		{"set operator", `{"ForAnyValue:StringEquals":{"sts:ExternalId":"customer-123"}}`, false},
+		{"unsupported key", `{"StringEquals":{"aws:username":"alice"}}`, false},
+		{"empty value", `{"StringEquals":{"sts:ExternalId":""}}`, false},
+		{"whitespace value", `{"StringEquals":{"sts:ExternalId":"customer 123"}}`, false},
+		{"wildcard value", `{"StringEquals":{"sts:ExternalId":"customer-*"}}`, false},
+		{"variable value", `{"StringEquals":{"sts:ExternalId":"${aws:username}"}}`, false},
+		{"mixed broad list", `{"StringEquals":{"sts:ExternalId":["customer-123","*"]}}`, false},
+		{"mixed broad arn list", `{"ArnEquals":{"aws:SourceArn":["arn:aws:s3:::named-bucket","arn:aws:s3:::bucket-*"]}}`, false},
+		{"mixed universal cidr list", `{"IpAddress":{"aws:SourceIp":["10.0.0.0/8","::/0"]}}`, false},
+		{"malformed scalar", `{"StringEquals":{"sts:ExternalId":42}}`, false},
+		{"malformed list", `{"StringEquals":{"sts:ExternalId":["customer-123",42]}}`, false},
+		{"bad organization", `{"StringEquals":{"aws:PrincipalOrgID":"organization"}}`, false},
+		{"bad account", `{"StringEquals":{"aws:SourceAccount":"1234"}}`, false},
+		{"wildcard arn", `{"ArnLike":{"aws:SourceArn":"arn:aws:s3:::bucket-*"}}`, false},
+		{"invalid arn", `{"ArnEquals":{"aws:SourceArn":"not-an-arn"}}`, false},
+		{"universal ipv4", `{"IpAddress":{"aws:SourceIp":"0.0.0.0/0"}}`, false},
+		{"universal ipv6", `{"IpAddress":{"aws:SourceIp":"::/0"}}`, false},
+		{"invalid cidr", `{"IpAddress":{"aws:SourceIp":"10.0.0.1"}}`, false},
+		{"mixed supported unsupported", `{"StringEquals":{"sts:ExternalId":"customer-123"},"Bool":{"aws:SecureTransport":"true"}}`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var condition any
+			if err := json.Unmarshal([]byte(tt.condition), &condition); err != nil {
+				t.Fatalf("unmarshal condition fixture: %v", err)
+			}
+			statement := PolicyStatement{Condition: condition}
+			if got := statement.HasRestrictiveTrustCondition(); got != tt.want {
+				t.Fatalf("HasRestrictiveTrustCondition() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-40: match only action patterns that grant the AWS-principal assume-role operation.
+func TestPolicyStatementHasAssumeRoleAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions StringOrSlice
+		want    bool
+	}{
+		{"exact", StringOrSlice{"sts:AssumeRole"}, true},
+		{"case insensitive", StringOrSlice{"STS:assumerole"}, true},
+		{"star pattern", StringOrSlice{"sts:Assume*"}, true},
+		{"question pattern", StringOrSlice{"sts:AssumeRol?"}, true},
+		{"service wildcard", StringOrSlice{"sts:*"}, true},
+		{"global wildcard", StringOrSlice{"*"}, true},
+		{"matching list", StringOrSlice{"sts:TagSession", "sts:AssumeRole"}, true},
+		{"unrelated", StringOrSlice{"s3:GetObject"}, false},
+		{"tag session", StringOrSlice{"sts:TagSession"}, false},
+		{"saml", StringOrSlice{"sts:AssumeRoleWithSAML"}, false},
+		{"web identity", StringOrSlice{"sts:AssumeRoleWithWebIdentity"}, false},
+		{"nonmatching list", StringOrSlice{"sts:TagSession", "sts:AssumeRoleWithSAML"}, false},
+		{"empty", nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statement := PolicyStatement{Action: tt.actions}
+			if got := statement.HasAssumeRoleAction(); got != tt.want {
+				t.Fatalf("HasAssumeRoleAction() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-19@v3: unsupported condition values must not make an otherwise valid policy unparsable.
+func TestParsePolicyDocument_PreservesUnsupportedCondition(t *testing.T) {
+	raw := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::999999999999:root"},"Action":"sts:AssumeRole","Condition":{"Custom":{"key":{"nested":true}}}}]}`
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if doc.Statement[0].HasRestrictiveTrustCondition() {
+		t.Fatal("unsupported condition must remain nonconstraining")
+	}
+}

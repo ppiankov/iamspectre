@@ -41,6 +41,43 @@ func TestFinding_JSON(t *testing.T) {
 	}
 }
 
+// WO-20@v3: assessment metadata has a stable snake_case JSON round trip.
+func TestFinding_AssessmentJSON(t *testing.T) {
+	f := assessedFinding()
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, field := range []string{"evidence_tier", "state", "reachability", "impact", "blast_radius", "rubric_version", "evaluated_layers"} {
+		if !contains(string(data), `"`+field+`"`) {
+			t.Fatalf("assessment JSON missing %q", field)
+		}
+	}
+	var decoded Finding
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.RubricVersion != RubricVersionV1 || len(decoded.EvaluatedLayers) != len(CanonicalLayers()) {
+		t.Fatalf("assessment round trip = %#v", decoded)
+	}
+	tierZero := EvidenceTierFact
+	f.EvidenceTier = &tierZero
+	data, err = json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal tier zero: %v", err)
+	}
+	if !contains(string(data), `"evidence_tier":0`) {
+		t.Fatalf("tier-zero assessment omitted evidence tier: %s", data)
+	}
+	legacy, err := json.Marshal(Finding{Severity: SeverityHigh})
+	if err != nil {
+		t.Fatalf("marshal legacy: %v", err)
+	}
+	if contains(string(legacy), "evidence_tier") {
+		t.Fatalf("legacy finding gained assessment metadata: %s", legacy)
+	}
+}
+
 func TestScanResult_JSON(t *testing.T) {
 	r := ScanResult{
 		Findings: []Finding{
