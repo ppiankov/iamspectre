@@ -89,6 +89,9 @@ tenant_id: my-azure-tenant-id
 stale_days: 90
 severity_min: medium
 format: json
+timeout: 5m
+regions:
+  - us-east-1
 exclude:
   principals:
     - ci-bot
@@ -96,6 +99,11 @@ exclude:
   resource_ids:
     - arn:aws:iam::123456789012:role/service-linked-role
 ```
+
+Config keys are honored by all cloud commands. `timeout` applies when `--timeout` is
+left at its default. `regions` applies to AWS only — AWS IAM is account-global, so it
+accepts at most one distinct region (multiple distinct regions are rejected). `exclude`
+entries are matched against principal identifiers and resource IDs during scanning.
 
 Generate a sample config with `iamspectre init`.
 
