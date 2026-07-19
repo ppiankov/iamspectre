@@ -82,6 +82,30 @@ func TestScanConfig_ExcludeGuestsZeroValue(t *testing.T) {
 	}
 }
 
+// WO-14@v3: pin resource and principal exclusion semantics, including false entries.
+func TestIsExcluded(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       ScanConfig
+		resource  string
+		principal string
+		want      bool
+	}{
+		{name: "nil maps"},
+		{name: "resource", cfg: ScanConfig{Exclude: ExcludeConfig{ResourceIDs: map[string]bool{"r": true}}}, resource: "r", want: true},
+		{name: "principal", cfg: ScanConfig{Exclude: ExcludeConfig{Principals: map[string]bool{"p": true}}}, principal: "p", want: true},
+		{name: "absent", cfg: ScanConfig{Exclude: ExcludeConfig{ResourceIDs: map[string]bool{"other": true}, Principals: map[string]bool{"other": true}}}, resource: "r", principal: "p"},
+		{name: "explicit false", cfg: ScanConfig{Exclude: ExcludeConfig{ResourceIDs: map[string]bool{"r": false}, Principals: map[string]bool{"p": false}}}, resource: "r", principal: "p"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsExcluded(tt.cfg, tt.resource, tt.principal); got != tt.want {
+				t.Fatalf("IsExcluded() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFinding_NoMetadata(t *testing.T) {
 	f := Finding{
 		ID:             FindingUnattachedPolicy,

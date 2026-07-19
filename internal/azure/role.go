@@ -33,7 +33,7 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	result := &iam.ScanResult{PrincipalsScanned: len(assignments)}
 
 	for _, a := range assignments {
-		if isExcluded(cfg, a.ID, a.PrincipalID) {
+		if iam.IsExcluded(cfg, a.ID, a.PrincipalID) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 

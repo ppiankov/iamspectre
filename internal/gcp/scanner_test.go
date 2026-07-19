@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ppiankov/iamspectre/internal/iam"
+	"github.com/ppiankov/iamspectre/internal/testutil"
 	crmv1 "google.golang.org/api/cloudresourcemanager/v1"
 	iamv1 "google.golang.org/api/iam/v1"
 )
@@ -74,6 +75,7 @@ func TestGCPScanner_ScanAll(t *testing.T) {
 }
 
 func TestGCPScanner_ScanAll_ScannerError(t *testing.T) {
+	// WO-28@v2: share exact non-fatal error assertions across provider packages.
 	mockIAMAPI := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{},
 	}
@@ -85,15 +87,7 @@ func TestGCPScanner_ScanAll_ScannerError(t *testing.T) {
 	client := NewClientWith("test-project", mockIAMAPI, mockCRMAPI)
 	scanner := NewGCPScanner(client, iam.ScanConfig{StaleDays: 90})
 
-	result, err := scanner.ScanAll(context.Background())
-	if err != nil {
-		t.Fatalf("scan should not return error for individual scanner failure: %v", err)
-	}
-
-	// Binding scanner error should be recorded
-	if len(result.Errors) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(result.Errors))
-	}
+	testutil.AssertNonFatalScannerErrors(t, scanner.ScanAll, 1, "deadline exceeded")
 }
 
 func TestGCPScanner_ScanAll_NoFindings(t *testing.T) {

@@ -6,21 +6,16 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/ppiankov/iamspectre/internal/analyzer"
 	gcpscanner "github.com/ppiankov/iamspectre/internal/gcp"
-	"github.com/ppiankov/iamspectre/internal/iam"
-	"github.com/ppiankov/iamspectre/internal/report"
 	"github.com/spf13/cobra"
 )
 
-var gcpFlags struct {
-	project     string
-	staleDays   int
-	severityMin string
-	format      string
-	outputFile  string
-	timeout     time.Duration
+type gcpScanFlags struct {
+	commonScanFlags
+	project string
 }
+
+var gcpFlags gcpScanFlags
 
 var gcpCmd = &cobra.Command{
 	Use:   "gcp",
@@ -30,21 +25,22 @@ and stale identities. Reports severity and recommendations for each finding.`,
 	RunE: runGCP,
 }
 
+// WO-27@v2: install GCP flags through the shared registration boundary.
 func init() {
-	gcpCmd.Flags().StringVar(&gcpFlags.project, "project", "", "GCP project ID")
-	gcpCmd.Flags().IntVar(&gcpFlags.staleDays, "stale-days", 90, "Inactivity threshold (days)")
-	gcpCmd.Flags().StringVar(&gcpFlags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
-	gcpCmd.Flags().StringVar(&gcpFlags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
-	gcpCmd.Flags().StringVarP(&gcpFlags.outputFile, "output", "o", "", "Output file path (default: stdout)")
-	// WO-12@v2: use the same timeout sentinel consumed by YAML default resolution.
-	gcpCmd.Flags().DurationVar(&gcpFlags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
+	registerGCPFlags(gcpCmd, &gcpFlags)
+}
+
+// WO-27@v2: compose shared and GCP-only flags on any command instance.
+func registerGCPFlags(cmd *cobra.Command, flags *gcpScanFlags) {
+	registerCommonScanFlags(cmd, &flags.commonScanFlags)
+	cmd.Flags().StringVar(&flags.project, "project", "", "GCP project ID")
 }
 
 func runGCP(cmd *cobra.Command, _ []string) error {
-	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
-	applyGCPConfigDefaults(cmd)
+	// WO-17: resolve every shared runtime option once before provider setup.
+	common := resolveCommonOptions(cmd, &gcpFlags.commonScanFlags)
 
-	ctx, cancel := withScanTimeout(cmd.Context(), gcpFlags.timeout, context.WithTimeout)
+	ctx, cancel := withScanTimeout(cmd.Context(), common.timeout, context.WithTimeout)
 	defer cancel()
 
 	project := gcpFlags.project
@@ -64,10 +60,7 @@ func runGCP(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Build scan config
-	scanCfg := iam.ScanConfig{
-		StaleDays: gcpFlags.staleDays,
-		Exclude:   toExcludeConfig(cfg.Exclude), // WO-11@v2: honor persisted GCP exclusions.
-	}
+	scanCfg := common.scanConfig
 
 	// Run GCP IAM scan
 	scanner := gcpscanner.NewGCPScanner(client, scanCfg)
@@ -76,50 +69,16 @@ func runGCP(cmd *cobra.Command, _ []string) error {
 		return enhanceError("scan GCP IAM", err)
 	}
 
-	// Analyze results: filter by severity, compute summary
-	analysis := analyzer.Analyze(result, analyzer.AnalyzerConfig{
-		SeverityMin: iam.Severity(gcpFlags.severityMin),
+	// WO-25@v2: delegate the provider-independent post-scan pipeline.
+	return analyzeAndReport(result, postScanOptions{
+		cloud: "gcp", targetType: "gcp-project", targetID: project,
+		staleDays: common.scanConfig.StaleDays, severityMin: common.severityMin,
+		format: common.format, outputFile: common.outputFile, timestamp: time.Now().UTC(),
 	})
-
-	// Build report data
-	data := report.Data{
-		Tool:      "iamspectre",
-		Version:   version,
-		Timestamp: time.Now().UTC(),
-		Target: report.Target{
-			Type:    "gcp-project",
-			URIHash: computeTargetHash(project),
-		},
-		Config: report.ReportConfig{
-			StaleDays:   gcpFlags.staleDays,
-			SeverityMin: gcpFlags.severityMin,
-			Cloud:       "gcp",
-		},
-		Findings: analysis.Findings,
-		Summary:  analysis.Summary,
-		Errors:   analysis.Errors,
-	}
-
-	reporter, err := selectReporter(gcpFlags.format, gcpFlags.outputFile)
-	if err != nil {
-		return err
-	}
-	return reporter.Generate(data)
 }
 
 // WO-16@v2: explicit CLI flags win even when their values equal documented defaults.
 func applyGCPConfigDefaults(cmd *cobra.Command) {
-	if !cmd.Flags().Changed("stale-days") && cfg.StaleDays > 0 {
-		gcpFlags.staleDays = cfg.StaleDays
-	}
-	if !cmd.Flags().Changed("severity-min") && cfg.SeverityMin != "" {
-		gcpFlags.severityMin = cfg.SeverityMin
-	}
-	if !cmd.Flags().Changed("format") && cfg.Format != "" {
-		gcpFlags.format = cfg.Format
-	}
-	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
-	if timeout := cfg.TimeoutDuration(); !cmd.Flags().Changed("timeout") && timeout > 0 {
-		gcpFlags.timeout = timeout
-	}
+	// WO-17: retain a policy-free compatibility wrapper around the shared resolver.
+	applyCommonConfigDefaults(cmd, &gcpFlags.commonScanFlags)
 }

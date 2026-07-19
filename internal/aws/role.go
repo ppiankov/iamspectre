@@ -41,13 +41,13 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 
 	result := &iam.ScanResult{PrincipalsScanned: len(roles)}
 	now := time.Now().UTC()
-	threshold := now.AddDate(0, 0, -cfg.StaleDays)
+	threshold := iam.StaleThreshold(now, cfg.StaleDays) // WO-24@v2: use the shared calendar cutoff.
 
 	for _, role := range roles {
 		roleName := awssdk.ToString(role.RoleName)
 		roleARN := awssdk.ToString(role.Arn)
 
-		if isExcluded(cfg, roleARN, roleName) {
+		if iam.IsExcluded(cfg, roleARN, roleName) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 

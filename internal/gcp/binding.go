@@ -53,7 +53,7 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 			email := strings.TrimPrefix(member, "serviceAccount:")
 			saCount[email] = true
 
-			if isExcluded(cfg, email, email) {
+			if iam.IsExcluded(cfg, email, email) { // WO-14@v3: use the shared exclusion policy.
 				continue
 			}
 

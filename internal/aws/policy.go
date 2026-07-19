@@ -39,7 +39,7 @@ func (s *PolicyScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Scan
 		policyARN := awssdk.ToString(policy.Arn)
 		policyName := awssdk.ToString(policy.PolicyName)
 
-		if isExcluded(cfg, policyARN, policyName) {
+		if iam.IsExcluded(cfg, policyARN, policyName) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 
