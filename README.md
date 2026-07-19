@@ -1,7 +1,6 @@
 # iamspectre
 
 [![CI](https://github.com/ppiankov/iamspectre/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/iamspectre/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/ppiankov/iamspectre)](https://goreportcard.com/report/github.com/ppiankov/iamspectre)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
 
 **iamspectre** — Cross-cloud IAM auditor for AWS, GCP, and Azure AD. Part of [SpectreHub](https://github.com/ppiankov/spectrehub).
