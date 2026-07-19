@@ -45,7 +45,7 @@ func init() {
 
 func runAzure(cmd *cobra.Command, _ []string) error {
 	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
-	applyAzureConfigDefaults()
+	applyAzureConfigDefaults(cmd)
 
 	ctx, cancel := withScanTimeout(cmd.Context(), azureFlags.timeout, context.WithTimeout)
 	defer cancel()
@@ -113,18 +113,19 @@ func buildAzureScanConfig(staleDays int, exclude config.Exclude, includeGuests b
 	}
 }
 
-func applyAzureConfigDefaults() {
-	if azureFlags.staleDays == 90 && cfg.StaleDays > 0 {
+// WO-16@v2: explicit CLI flags win even when their values equal documented defaults.
+func applyAzureConfigDefaults(cmd *cobra.Command) {
+	if !cmd.Flags().Changed("stale-days") && cfg.StaleDays > 0 {
 		azureFlags.staleDays = cfg.StaleDays
 	}
-	if azureFlags.severityMin == "low" && cfg.SeverityMin != "" {
+	if !cmd.Flags().Changed("severity-min") && cfg.SeverityMin != "" {
 		azureFlags.severityMin = cfg.SeverityMin
 	}
-	if azureFlags.format == "text" && cfg.Format != "" {
+	if !cmd.Flags().Changed("format") && cfg.Format != "" {
 		azureFlags.format = cfg.Format
 	}
 	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
-	if timeout := cfg.TimeoutDuration(); azureFlags.timeout == defaultScanTimeout && timeout > 0 {
+	if timeout := cfg.TimeoutDuration(); !cmd.Flags().Changed("timeout") && timeout > 0 {
 		azureFlags.timeout = timeout
 	}
 }
