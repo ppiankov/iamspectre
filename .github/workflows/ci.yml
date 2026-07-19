@@ -77,6 +77,10 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # WO-22@v3: make scope expansion fail before the general lint gate.
+      - name: Enforce AWS IAM scope boundary
+        run: go test ./internal/aws ./internal/commands -run 'TestAWSScopeBoundary|TestInitAWSPermissionBoundary' -count=1
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:

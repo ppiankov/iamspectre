@@ -45,7 +45,7 @@ func init() {
 
 func runAWS(cmd *cobra.Command, _ []string) error {
 	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
-	applyAWSConfigDefaults()
+	applyAWSConfigDefaults(cmd)
 
 	ctx, cancel := withScanTimeout(cmd.Context(), awsFlags.timeout, context.WithTimeout)
 	defer cancel()
@@ -113,18 +113,19 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 	return reporter.Generate(data)
 }
 
-func applyAWSConfigDefaults() {
-	if awsFlags.staleDays == 90 && cfg.StaleDays > 0 {
+// WO-16@v2: explicit CLI flags win even when their values equal documented defaults.
+func applyAWSConfigDefaults(cmd *cobra.Command) {
+	if !cmd.Flags().Changed("stale-days") && cfg.StaleDays > 0 {
 		awsFlags.staleDays = cfg.StaleDays
 	}
-	if awsFlags.severityMin == "low" && cfg.SeverityMin != "" {
+	if !cmd.Flags().Changed("severity-min") && cfg.SeverityMin != "" {
 		awsFlags.severityMin = cfg.SeverityMin
 	}
-	if awsFlags.format == "text" && cfg.Format != "" {
+	if !cmd.Flags().Changed("format") && cfg.Format != "" {
 		awsFlags.format = cfg.Format
 	}
 	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
-	if timeout := cfg.TimeoutDuration(); awsFlags.timeout == defaultScanTimeout && timeout > 0 {
+	if timeout := cfg.TimeoutDuration(); !cmd.Flags().Changed("timeout") && timeout > 0 {
 		awsFlags.timeout = timeout
 	}
 }

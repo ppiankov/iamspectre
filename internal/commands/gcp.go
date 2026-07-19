@@ -42,7 +42,7 @@ func init() {
 
 func runGCP(cmd *cobra.Command, _ []string) error {
 	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
-	applyGCPConfigDefaults()
+	applyGCPConfigDefaults(cmd)
 
 	ctx, cancel := withScanTimeout(cmd.Context(), gcpFlags.timeout, context.WithTimeout)
 	defer cancel()
@@ -107,18 +107,19 @@ func runGCP(cmd *cobra.Command, _ []string) error {
 	return reporter.Generate(data)
 }
 
-func applyGCPConfigDefaults() {
-	if gcpFlags.staleDays == 90 && cfg.StaleDays > 0 {
+// WO-16@v2: explicit CLI flags win even when their values equal documented defaults.
+func applyGCPConfigDefaults(cmd *cobra.Command) {
+	if !cmd.Flags().Changed("stale-days") && cfg.StaleDays > 0 {
 		gcpFlags.staleDays = cfg.StaleDays
 	}
-	if gcpFlags.severityMin == "low" && cfg.SeverityMin != "" {
+	if !cmd.Flags().Changed("severity-min") && cfg.SeverityMin != "" {
 		gcpFlags.severityMin = cfg.SeverityMin
 	}
-	if gcpFlags.format == "text" && cfg.Format != "" {
+	if !cmd.Flags().Changed("format") && cfg.Format != "" {
 		gcpFlags.format = cfg.Format
 	}
 	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
-	if timeout := cfg.TimeoutDuration(); gcpFlags.timeout == defaultScanTimeout && timeout > 0 {
+	if timeout := cfg.TimeoutDuration(); !cmd.Flags().Changed("timeout") && timeout > 0 {
 		gcpFlags.timeout = timeout
 	}
 }
