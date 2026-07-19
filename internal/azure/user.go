@@ -35,11 +35,18 @@ func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 		return nil, fmt.Errorf("fetch users: %w", s.fetchErr)
 	}
 
-	result := &iam.ScanResult{PrincipalsScanned: len(s.users)}
+	// WO-15: count only principals admitted by the guest filter.
+	result := &iam.ScanResult{}
 	cutoff := daysAgo(cfg.StaleDays)
 	hasSignInData := false
 
 	for _, user := range s.users {
+		// WO-15: skip excluded guests before any per-user evaluation or API call.
+		if cfg.ExcludeGuests && user.UserType == "Guest" {
+			continue
+		}
+		result.PrincipalsScanned++
+
 		if isExcluded(cfg, user.ID, user.UserPrincipalName) {
 			continue
 		}

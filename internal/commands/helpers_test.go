@@ -4,7 +4,55 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/ppiankov/iamspectre/internal/config"
 )
+
+// WO-11@v2: pin exact persisted-to-runtime exclusion conversion.
+func TestToExcludeConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		exclude    config.Exclude
+		principals map[string]bool
+		resources  map[string]bool
+	}{
+		{name: "empty", principals: map[string]bool{}, resources: map[string]bool{}},
+		{
+			name: "principals resources and duplicates",
+			exclude: config.Exclude{
+				Principals:  []string{"alice", "alice", "bob"},
+				ResourceIDs: []string{"resource-1", "resource-1"},
+			},
+			principals: map[string]bool{"alice": true, "bob": true},
+			resources:  map[string]bool{"resource-1": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toExcludeConfig(tt.exclude)
+			if !mapsEqual(got.Principals, tt.principals) {
+				t.Fatalf("principals = %#v, want %#v", got.Principals, tt.principals)
+			}
+			if !mapsEqual(got.ResourceIDs, tt.resources) {
+				t.Fatalf("resource IDs = %#v, want %#v", got.ResourceIDs, tt.resources)
+			}
+		})
+	}
+}
+
+// WO-11@v2: compare exclusion lookup maps without changing their representation.
+func mapsEqual(got, want map[string]bool) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
+}
 
 func TestEnhanceError_NoCredentials(t *testing.T) {
 	err := enhanceError("test", errors.New("NoCredentialProviders: no valid providers"))
