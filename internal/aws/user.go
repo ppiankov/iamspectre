@@ -27,10 +27,10 @@ func (s *UserScanner) Type() iam.ResourceType {
 func (s *UserScanner) Scan(_ context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
 	result := &iam.ScanResult{PrincipalsScanned: len(s.entries)}
 	now := time.Now().UTC()
-	threshold := now.AddDate(0, 0, -cfg.StaleDays)
+	threshold := iam.StaleThreshold(now, cfg.StaleDays) // WO-24@v2: use the shared calendar cutoff.
 
 	for _, entry := range s.entries {
-		if isExcluded(cfg, entry.ARN, entry.User) {
+		if iam.IsExcluded(cfg, entry.ARN, entry.User) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 
@@ -114,15 +114,4 @@ func (s *UserScanner) checkStaleKey(entry CredentialEntry, keyNum int, lastUsed 
 			Metadata:       meta,
 		})
 	}
-}
-
-// isExcluded checks if a resource should be excluded from scanning.
-func isExcluded(cfg iam.ScanConfig, resourceID, principalName string) bool {
-	if cfg.Exclude.ResourceIDs != nil && cfg.Exclude.ResourceIDs[resourceID] {
-		return true
-	}
-	if cfg.Exclude.Principals != nil && cfg.Exclude.Principals[principalName] {
-		return true
-	}
-	return false
 }

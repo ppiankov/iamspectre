@@ -203,3 +203,23 @@ func TestResolvedTimeoutPrecedesContextConstruction(t *testing.T) {
 		t.Fatalf("captured timeout = %s, want 2m", captured)
 	}
 }
+
+// WO-17: pin shared default resolution and exclusion conversion as one operation.
+func TestResolveCommonOptions(t *testing.T) {
+	oldConfig := cfg
+	t.Cleanup(func() { cfg = oldConfig })
+	cfg = config.Config{
+		StaleDays: 30, SeverityMin: "high", Format: "json", Timeout: "2m",
+		Exclude: config.Exclude{ResourceIDs: []string{"resource"}, Principals: []string{"principal"}},
+	}
+	cmd := &cobra.Command{Use: "test"}
+	var flags commonScanFlags
+	registerCommonScanFlags(cmd, &flags)
+	got := resolveCommonOptions(cmd, &flags)
+	if got.scanConfig.StaleDays != 30 || got.severityMin != "high" || got.format != "json" || got.timeout != 2*time.Minute {
+		t.Fatalf("resolved options = %#v", got)
+	}
+	if !got.scanConfig.Exclude.ResourceIDs["resource"] || !got.scanConfig.Exclude.Principals["principal"] {
+		t.Fatalf("resolved exclusions = %#v", got.scanConfig.Exclude)
+	}
+}

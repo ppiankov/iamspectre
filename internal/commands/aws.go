@@ -6,21 +6,16 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/ppiankov/iamspectre/internal/analyzer"
 	awsscanner "github.com/ppiankov/iamspectre/internal/aws"
-	"github.com/ppiankov/iamspectre/internal/iam"
-	"github.com/ppiankov/iamspectre/internal/report"
 	"github.com/spf13/cobra"
 )
 
-var awsFlags struct {
-	profile     string
-	staleDays   int
-	severityMin string
-	format      string
-	outputFile  string
-	timeout     time.Duration
+type awsScanFlags struct {
+	commonScanFlags
+	profile string
 }
+
+var awsFlags awsScanFlags
 
 // WO-12@v2: keep the CLI and YAML timeout fallback anchored to one default.
 const defaultScanTimeout = 5 * time.Minute
@@ -33,21 +28,22 @@ stale identities. Reports severity and recommendations for each finding.`,
 	RunE: runAWS,
 }
 
+// WO-27@v2: install AWS flags through the shared registration boundary.
 func init() {
-	awsCmd.Flags().StringVar(&awsFlags.profile, "profile", "", "AWS profile name")
-	awsCmd.Flags().IntVar(&awsFlags.staleDays, "stale-days", 90, "Inactivity threshold (days)")
-	awsCmd.Flags().StringVar(&awsFlags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
-	awsCmd.Flags().StringVar(&awsFlags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
-	awsCmd.Flags().StringVarP(&awsFlags.outputFile, "output", "o", "", "Output file path (default: stdout)")
-	// WO-12@v2: use the same timeout sentinel consumed by YAML default resolution.
-	awsCmd.Flags().DurationVar(&awsFlags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
+	registerAWSFlags(awsCmd, &awsFlags)
+}
+
+// WO-27@v2: compose shared and AWS-only flags on any command instance.
+func registerAWSFlags(cmd *cobra.Command, flags *awsScanFlags) {
+	registerCommonScanFlags(cmd, &flags.commonScanFlags)
+	cmd.Flags().StringVar(&flags.profile, "profile", "", "AWS profile name")
 }
 
 func runAWS(cmd *cobra.Command, _ []string) error {
-	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
-	applyAWSConfigDefaults(cmd)
+	// WO-17: resolve every shared runtime option once before provider setup.
+	common := resolveCommonOptions(cmd, &awsFlags.commonScanFlags)
 
-	ctx, cancel := withScanTimeout(cmd.Context(), awsFlags.timeout, context.WithTimeout)
+	ctx, cancel := withScanTimeout(cmd.Context(), common.timeout, context.WithTimeout)
 	defer cancel()
 
 	// Resolve profile from flag or config
@@ -70,10 +66,7 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Build scan config
-	scanCfg := iam.ScanConfig{
-		StaleDays: awsFlags.staleDays,
-		Exclude:   toExcludeConfig(cfg.Exclude), // WO-11@v2: honor persisted AWS exclusions.
-	}
+	scanCfg := common.scanConfig
 
 	// Run AWS IAM scan
 	scanner := awsscanner.NewAWSScanner(client, scanCfg)
@@ -82,52 +75,18 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 		return enhanceError("scan AWS IAM", err)
 	}
 
-	// Analyze results: filter by severity, compute summary
-	analysis := analyzer.Analyze(result, analyzer.AnalyzerConfig{
-		SeverityMin: iam.Severity(awsFlags.severityMin),
+	// WO-25@v2: delegate the provider-independent post-scan pipeline.
+	return analyzeAndReport(result, postScanOptions{
+		cloud: "aws", targetType: "aws-account", targetID: prof,
+		staleDays: common.scanConfig.StaleDays, severityMin: common.severityMin,
+		format: common.format, outputFile: common.outputFile, timestamp: time.Now().UTC(),
 	})
-
-	// Build report data
-	data := report.Data{
-		Tool:      "iamspectre",
-		Version:   version,
-		Timestamp: time.Now().UTC(),
-		Target: report.Target{
-			Type:    "aws-account",
-			URIHash: computeTargetHash(prof),
-		},
-		Config: report.ReportConfig{
-			StaleDays:   awsFlags.staleDays,
-			SeverityMin: awsFlags.severityMin,
-			Cloud:       "aws",
-		},
-		Findings: analysis.Findings,
-		Summary:  analysis.Summary,
-		Errors:   analysis.Errors,
-	}
-
-	reporter, err := selectReporter(awsFlags.format, awsFlags.outputFile)
-	if err != nil {
-		return err
-	}
-	return reporter.Generate(data)
 }
 
 // WO-16@v2: explicit CLI flags win even when their values equal documented defaults.
 func applyAWSConfigDefaults(cmd *cobra.Command) {
-	if !cmd.Flags().Changed("stale-days") && cfg.StaleDays > 0 {
-		awsFlags.staleDays = cfg.StaleDays
-	}
-	if !cmd.Flags().Changed("severity-min") && cfg.SeverityMin != "" {
-		awsFlags.severityMin = cfg.SeverityMin
-	}
-	if !cmd.Flags().Changed("format") && cfg.Format != "" {
-		awsFlags.format = cfg.Format
-	}
-	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
-	if timeout := cfg.TimeoutDuration(); !cmd.Flags().Changed("timeout") && timeout > 0 {
-		awsFlags.timeout = timeout
-	}
+	// WO-17: retain a policy-free compatibility wrapper around the shared resolver.
+	applyCommonConfigDefaults(cmd, &awsFlags.commonScanFlags)
 }
 
 // WO-12@v2: construct scan contexts from the already-resolved timeout.

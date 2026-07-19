@@ -103,6 +103,14 @@ type ExcludeConfig struct {
 	Principals  map[string]bool
 }
 
+// WO-14@v3: keep exclusion policy identical across every provider package.
+func IsExcluded(cfg ScanConfig, resourceID, principalName string) bool {
+	if cfg.Exclude.ResourceIDs != nil && cfg.Exclude.ResourceIDs[resourceID] {
+		return true
+	}
+	return cfg.Exclude.Principals != nil && cfg.Exclude.Principals[principalName]
+}
+
 // Scanner is the interface each resource-type scanner implements.
 type Scanner interface {
 	Scan(ctx context.Context, cfg ScanConfig) (*ScanResult, error)

@@ -5,23 +5,19 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/ppiankov/iamspectre/internal/analyzer"
 	azurescanner "github.com/ppiankov/iamspectre/internal/azure"
 	"github.com/ppiankov/iamspectre/internal/config"
 	"github.com/ppiankov/iamspectre/internal/iam"
-	"github.com/ppiankov/iamspectre/internal/report"
 	"github.com/spf13/cobra"
 )
 
-var azureFlags struct {
+type azureScanFlags struct {
+	commonScanFlags
 	tenant        string
-	staleDays     int
-	severityMin   string
-	format        string
-	outputFile    string
-	timeout       time.Duration
 	includeGuests bool
 }
+
+var azureFlags azureScanFlags
 
 var azureCmd = &cobra.Command{
 	Use:   "azure",
@@ -32,22 +28,23 @@ Reports severity and recommendations for each finding.`,
 	RunE: runAzure,
 }
 
+// WO-27@v2: install Azure flags through the shared registration boundary.
 func init() {
-	azureCmd.Flags().StringVar(&azureFlags.tenant, "tenant", "", "Azure tenant ID")
-	azureCmd.Flags().IntVar(&azureFlags.staleDays, "stale-days", 90, "Inactivity threshold (days)")
-	azureCmd.Flags().StringVar(&azureFlags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
-	azureCmd.Flags().StringVar(&azureFlags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
-	azureCmd.Flags().StringVarP(&azureFlags.outputFile, "output", "o", "", "Output file path (default: stdout)")
-	// WO-12@v2: use the same timeout sentinel consumed by YAML default resolution.
-	azureCmd.Flags().DurationVar(&azureFlags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
-	azureCmd.Flags().BoolVar(&azureFlags.includeGuests, "include-guests", true, "Include guest/external users in audit")
+	registerAzureFlags(azureCmd, &azureFlags)
+}
+
+// WO-27@v2: compose shared and Azure-only flags on any command instance.
+func registerAzureFlags(cmd *cobra.Command, flags *azureScanFlags) {
+	registerCommonScanFlags(cmd, &flags.commonScanFlags)
+	cmd.Flags().StringVar(&flags.tenant, "tenant", "", "Azure tenant ID")
+	cmd.Flags().BoolVar(&flags.includeGuests, "include-guests", true, "Include guest/external users in audit")
 }
 
 func runAzure(cmd *cobra.Command, _ []string) error {
-	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
-	applyAzureConfigDefaults(cmd)
+	// WO-17: resolve every shared runtime option once before provider setup.
+	common := resolveCommonOptions(cmd, &azureFlags.commonScanFlags)
 
-	ctx, cancel := withScanTimeout(cmd.Context(), azureFlags.timeout, context.WithTimeout)
+	ctx, cancel := withScanTimeout(cmd.Context(), common.timeout, context.WithTimeout)
 	defer cancel()
 
 	tenant := azureFlags.tenant
@@ -62,7 +59,8 @@ func runAzure(cmd *cobra.Command, _ []string) error {
 		return enhanceError("initialize Azure client", err)
 	}
 
-	scanCfg := buildAzureScanConfig(azureFlags.staleDays, cfg.Exclude, azureFlags.includeGuests)
+	scanCfg := common.scanConfig
+	scanCfg.ExcludeGuests = !azureFlags.includeGuests
 
 	scanner := azurescanner.NewAzureScanner(client, scanCfg)
 	result, err := scanner.ScanAll(ctx)
@@ -70,38 +68,17 @@ func runAzure(cmd *cobra.Command, _ []string) error {
 		return enhanceError("scan Azure AD", err)
 	}
 
-	analysis := analyzer.Analyze(result, analyzer.AnalyzerConfig{
-		SeverityMin: iam.Severity(azureFlags.severityMin),
-	})
-
 	targetID := tenant
 	if targetID == "" {
 		targetID = "default"
 	}
 
-	data := report.Data{
-		Tool:      "iamspectre",
-		Version:   version,
-		Timestamp: time.Now().UTC(),
-		Target: report.Target{
-			Type:    "azure-tenant",
-			URIHash: computeTargetHash(targetID),
-		},
-		Config: report.ReportConfig{
-			StaleDays:   azureFlags.staleDays,
-			SeverityMin: azureFlags.severityMin,
-			Cloud:       "azure",
-		},
-		Findings: analysis.Findings,
-		Summary:  analysis.Summary,
-		Errors:   analysis.Errors,
-	}
-
-	reporter, err := selectReporter(azureFlags.format, azureFlags.outputFile)
-	if err != nil {
-		return err
-	}
-	return reporter.Generate(data)
+	// WO-25@v2: delegate the provider-independent post-scan pipeline.
+	return analyzeAndReport(result, postScanOptions{
+		cloud: "azure", targetType: "azure-tenant", targetID: targetID,
+		staleDays: common.scanConfig.StaleDays, severityMin: common.severityMin,
+		format: common.format, outputFile: common.outputFile, timestamp: time.Now().UTC(),
+	})
 }
 
 // WO-15: make the existing include-guests flag mapping directly testable.
@@ -115,17 +92,6 @@ func buildAzureScanConfig(staleDays int, exclude config.Exclude, includeGuests b
 
 // WO-16@v2: explicit CLI flags win even when their values equal documented defaults.
 func applyAzureConfigDefaults(cmd *cobra.Command) {
-	if !cmd.Flags().Changed("stale-days") && cfg.StaleDays > 0 {
-		azureFlags.staleDays = cfg.StaleDays
-	}
-	if !cmd.Flags().Changed("severity-min") && cfg.SeverityMin != "" {
-		azureFlags.severityMin = cfg.SeverityMin
-	}
-	if !cmd.Flags().Changed("format") && cfg.Format != "" {
-		azureFlags.format = cfg.Format
-	}
-	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
-	if timeout := cfg.TimeoutDuration(); !cmd.Flags().Changed("timeout") && timeout > 0 {
-		azureFlags.timeout = timeout
-	}
+	// WO-17: retain a policy-free compatibility wrapper around the shared resolver.
+	applyCommonConfigDefaults(cmd, &azureFlags.commonScanFlags)
 }

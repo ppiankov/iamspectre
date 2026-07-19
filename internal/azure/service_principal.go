@@ -41,10 +41,10 @@ func (s *ServicePrincipalScanner) Scan(ctx context.Context, cfg iam.ScanConfig) 
 	}
 
 	result := &iam.ScanResult{PrincipalsScanned: len(s.sps)}
-	cutoff := daysAgo(cfg.StaleDays)
+	cutoff := iam.StaleThreshold(time.Now(), cfg.StaleDays) // WO-24@v2: preserve the local clock sample.
 
 	for _, sp := range s.sps {
-		if isExcluded(cfg, sp.ID, sp.DisplayName) {
+		if iam.IsExcluded(cfg, sp.ID, sp.DisplayName) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 

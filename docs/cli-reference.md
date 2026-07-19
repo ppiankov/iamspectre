@@ -100,10 +100,12 @@ exclude:
     - arn:aws:iam::123456789012:role/service-linked-role
 ```
 
-Config keys are honored by all cloud commands. `timeout` applies when `--timeout` is
-left at its default. `regions` applies to AWS only — AWS IAM is account-global, so it
-accepts at most one distinct region (multiple distinct regions are rejected). `exclude`
-entries are matched against principal identifiers and resource IDs during scanning.
+Config keys are honored by all cloud commands. Explicit CLI flags take precedence over
+config-file values, which take precedence over built-in defaults — so `timeout` and other
+config keys apply only when the matching flag is not explicitly set. `regions` applies to
+AWS only — AWS IAM is account-global, so it accepts at most one distinct region (multiple
+distinct regions are rejected). `exclude` entries are matched against principal identifiers
+and resource IDs during scanning.
 
 Generate a sample config with `iamspectre init`.
 

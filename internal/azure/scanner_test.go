@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ppiankov/iamspectre/internal/iam"
+	"github.com/ppiankov/iamspectre/internal/testutil"
 )
 
 func TestScannerCount(t *testing.T) {
@@ -33,6 +34,7 @@ func TestAzureScanner_ScanAll_Empty(t *testing.T) {
 }
 
 func TestAzureScanner_ScanAll_UserFetchError(t *testing.T) {
+	// WO-28@v2: share exact non-fatal error assertions across provider packages.
 	mock := &mockGraph{
 		usersErr:    fmt.Errorf("permission denied"),
 		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
@@ -40,17 +42,11 @@ func TestAzureScanner_ScanAll_UserFetchError(t *testing.T) {
 	client := NewClientWith("test-tenant", mock)
 	scanner := NewAzureScanner(client, iam.ScanConfig{StaleDays: 90})
 
-	result, err := scanner.ScanAll(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(result.Errors) == 0 {
-		t.Fatal("expected errors from user scanner failure")
-	}
+	testutil.AssertNonFatalScannerErrors(t, scanner.ScanAll, 1, "permission denied")
 }
 
 func TestAzureScanner_ScanAll_SPFetchError(t *testing.T) {
+	// WO-28@v2: share exact non-fatal error assertions across provider packages.
 	mock := &mockGraph{
 		spsErr:      fmt.Errorf("access denied"),
 		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
@@ -58,15 +54,7 @@ func TestAzureScanner_ScanAll_SPFetchError(t *testing.T) {
 	client := NewClientWith("test-tenant", mock)
 	scanner := NewAzureScanner(client, iam.ScanConfig{StaleDays: 90})
 
-	result, err := scanner.ScanAll(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// SP scanner should report error but not abort other scanners
-	if len(result.Errors) == 0 {
-		t.Fatal("expected errors from SP scanner failure")
-	}
+	testutil.AssertNonFatalScannerErrors(t, scanner.ScanAll, 1, "access denied")
 }
 
 func TestAzureScanner_ScanAll_Integration(t *testing.T) {

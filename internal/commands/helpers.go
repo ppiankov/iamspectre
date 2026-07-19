@@ -3,13 +3,72 @@ package commands
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/ppiankov/iamspectre/internal/analyzer"
 	"github.com/ppiankov/iamspectre/internal/config"
 	"github.com/ppiankov/iamspectre/internal/iam"
 	"github.com/ppiankov/iamspectre/internal/report"
+	"github.com/spf13/cobra"
 )
+
+// WO-27@v2: keep shared cloud flag storage and registration structurally identical.
+type commonScanFlags struct {
+	staleDays   int
+	severityMin string
+	format      string
+	outputFile  string
+	timeout     time.Duration
+}
+
+// WO-27@v2: register the five flags shared by every cloud command in one place.
+func registerCommonScanFlags(cmd *cobra.Command, flags *commonScanFlags) {
+	cmd.Flags().IntVar(&flags.staleDays, "stale-days", 90, "Inactivity threshold (days)")
+	cmd.Flags().StringVar(&flags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
+	cmd.Flags().StringVar(&flags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
+	cmd.Flags().StringVarP(&flags.outputFile, "output", "o", "", "Output file path (default: stdout)")
+	cmd.Flags().DurationVar(&flags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
+}
+
+// WO-17: apply shared YAML defaults with explicit CLI flags taking precedence.
+func applyCommonConfigDefaults(cmd *cobra.Command, flags *commonScanFlags) {
+	if !cmd.Flags().Changed("stale-days") && cfg.StaleDays > 0 {
+		flags.staleDays = cfg.StaleDays
+	}
+	if !cmd.Flags().Changed("severity-min") && cfg.SeverityMin != "" {
+		flags.severityMin = cfg.SeverityMin
+	}
+	if !cmd.Flags().Changed("format") && cfg.Format != "" {
+		flags.format = cfg.Format
+	}
+	if timeout := cfg.TimeoutDuration(); !cmd.Flags().Changed("timeout") && timeout > 0 {
+		flags.timeout = timeout
+	}
+}
+
+// WO-17: resolve shared defaults and exclusion conversion through one provider-neutral boundary.
+func resolveCommonOptions(cmd *cobra.Command, flags *commonScanFlags) resolvedCommonOptions {
+	applyCommonConfigDefaults(cmd, flags)
+	return resolvedCommonOptions{
+		scanConfig:  iam.ScanConfig{StaleDays: flags.staleDays, Exclude: toExcludeConfig(cfg.Exclude)},
+		severityMin: flags.severityMin,
+		format:      flags.format,
+		outputFile:  flags.outputFile,
+		timeout:     flags.timeout,
+	}
+}
+
+// WO-17: carry the shared runtime options consumed identically by all providers.
+type resolvedCommonOptions struct {
+	scanConfig  iam.ScanConfig
+	severityMin string
+	format      string
+	outputFile  string
+	timeout     time.Duration
+}
 
 // WO-11@v2: convert persisted exclusions into the scanner's lookup representation.
 func toExcludeConfig(exclude config.Exclude) iam.ExcludeConfig {
@@ -56,17 +115,8 @@ func enhanceError(action string, err error) error {
 	return fmt.Errorf("%s: %w", action, err)
 }
 
-// selectReporter creates the appropriate reporter for the given format.
-func selectReporter(format, outputFile string) (report.Reporter, error) {
-	w := os.Stdout
-	if outputFile != "" {
-		f, err := os.Create(outputFile)
-		if err != nil {
-			return nil, fmt.Errorf("create output file: %w", err)
-		}
-		w = f
-	}
-
+// WO-25@v2: construct reporters without taking ownership of their writer.
+func selectReporter(format string, w io.Writer) (report.Reporter, error) {
 	switch format {
 	case "json":
 		return &report.JSONReporter{Writer: w}, nil
@@ -79,6 +129,71 @@ func selectReporter(format, outputFile string) (report.Reporter, error) {
 	default:
 		return nil, fmt.Errorf("unsupported format: %s (use text, json, sarif, or spectrehub)", format)
 	}
+}
+
+// WO-25@v2: centralize analysis, report construction, and output-file ownership.
+func analyzeAndReport(result *iam.ScanResult, opts postScanOptions) (returnErr error) {
+	if _, err := selectReporter(opts.format, io.Discard); err != nil {
+		return err
+	}
+
+	w := io.Writer(os.Stdout)
+	if opts.writer != nil {
+		w = opts.writer
+	}
+	var output io.WriteCloser
+	if opts.outputFile != "" {
+		openOutput := opts.openOutput
+		if openOutput == nil {
+			openOutput = func(path string) (io.WriteCloser, error) { return os.Create(path) }
+		}
+		var err error
+		output, err = openOutput(opts.outputFile)
+		if err != nil {
+			return fmt.Errorf("create output file: %w", err)
+		}
+		w = output
+		defer func() {
+			if err := output.Close(); err != nil && returnErr == nil {
+				returnErr = fmt.Errorf("close output file: %w", err)
+			}
+		}()
+	}
+
+	analysis := analyzer.Analyze(result, analyzer.AnalyzerConfig{SeverityMin: iam.Severity(opts.severityMin)})
+	data := report.Data{
+		Tool:      "iamspectre",
+		Version:   version,
+		Timestamp: opts.timestamp,
+		Target:    report.Target{Type: opts.targetType, URIHash: computeTargetHash(opts.targetID)},
+		Config: report.ReportConfig{
+			StaleDays:   opts.staleDays,
+			SeverityMin: opts.severityMin,
+			Cloud:       opts.cloud,
+		},
+		Findings: analysis.Findings,
+		Summary:  analysis.Summary,
+		Errors:   analysis.Errors,
+	}
+	reporter, err := selectReporter(opts.format, w)
+	if err != nil {
+		return err
+	}
+	return reporter.Generate(data)
+}
+
+// WO-25@v2: carry only provider-varying report inputs across the shared boundary.
+type postScanOptions struct {
+	cloud       string
+	targetType  string
+	targetID    string
+	staleDays   int
+	severityMin string
+	format      string
+	outputFile  string
+	timestamp   time.Time
+	writer      io.Writer
+	openOutput  func(string) (io.WriteCloser, error)
 }
 
 // sha256Sum returns the SHA256 hash of a string.

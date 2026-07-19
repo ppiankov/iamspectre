@@ -38,7 +38,7 @@ func (s *AppScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRes
 	warningCutoff := now.AddDate(0, 0, expiryWarningDays)
 
 	for _, app := range apps {
-		if isExcluded(cfg, app.ID, app.DisplayName) {
+		if iam.IsExcluded(cfg, app.ID, app.DisplayName) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 

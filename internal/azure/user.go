@@ -37,7 +37,7 @@ func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 
 	// WO-15: count only principals admitted by the guest filter.
 	result := &iam.ScanResult{}
-	cutoff := daysAgo(cfg.StaleDays)
+	cutoff := iam.StaleThreshold(time.Now(), cfg.StaleDays) // WO-24@v2: preserve the local clock sample.
 	hasSignInData := false
 
 	for _, user := range s.users {
@@ -47,7 +47,7 @@ func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 		}
 		result.PrincipalsScanned++
 
-		if isExcluded(cfg, user.ID, user.UserPrincipalName) {
+		if iam.IsExcluded(cfg, user.ID, user.UserPrincipalName) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 

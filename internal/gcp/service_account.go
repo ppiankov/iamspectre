@@ -36,7 +36,7 @@ func (s *ServiceAccountScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*
 	result := &iam.ScanResult{PrincipalsScanned: len(accounts)}
 
 	for _, sa := range accounts {
-		if isExcluded(cfg, sa.UniqueId, sa.Email) {
+		if iam.IsExcluded(cfg, sa.UniqueId, sa.Email) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 
@@ -74,7 +74,7 @@ func (s *ServiceAccountScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*
 func (s *ServiceAccountScanner) checkKeys(sa *iamv1.ServiceAccount, keys []*iamv1.ServiceAccountKey, cfg iam.ScanConfig) []iam.Finding {
 	var findings []iam.Finding
 	now := time.Now().UTC()
-	threshold := now.AddDate(0, 0, -cfg.StaleDays)
+	threshold := iam.StaleThreshold(now, cfg.StaleDays) // WO-24@v2: use the shared calendar cutoff.
 
 	for _, key := range keys {
 		created, err := time.Parse(time.RFC3339, key.ValidAfterTime)
@@ -103,15 +103,4 @@ func (s *ServiceAccountScanner) checkKeys(sa *iamv1.ServiceAccount, keys []*iamv
 	}
 
 	return findings
-}
-
-// isExcluded checks if a resource should be excluded from scanning.
-func isExcluded(cfg iam.ScanConfig, resourceID, principalName string) bool {
-	if cfg.Exclude.ResourceIDs != nil && cfg.Exclude.ResourceIDs[resourceID] {
-		return true
-	}
-	if cfg.Exclude.Principals != nil && cfg.Exclude.Principals[principalName] {
-		return true
-	}
-	return false
 }
