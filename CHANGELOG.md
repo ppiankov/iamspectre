@@ -5,14 +5,19 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.2] - 2026-07-19
 
 ### Fixed
 
 - Honor `exclude.principals` and `exclude.resource_ids` config keys across the `aws`, `gcp`, and `azure` commands (previously parsed but ignored)
-- Honor the `timeout` config key across all cloud commands when the `--timeout` flag is left at its default
+- Honor the `timeout` config key across all cloud commands when the `--timeout` flag is not explicitly set
 - Honor the `regions` config key for AWS IAM scans: a single region sets the SDK region; multiple distinct regions fail closed (AWS IAM is account-global)
 - Azure `include-guests` now excludes guest users before scanning when disabled, and reports only the principals actually scanned
+- Explicit CLI flags now take precedence over config-file values even when set to a value equal to the built-in default
+
+### Changed
+
+- Consolidated duplicated per-provider scan orchestration, config resolution, and staleness logic into shared internal helpers (no change in behavior or output)
 
 ## [0.2.1] - 2026-07-18
 
