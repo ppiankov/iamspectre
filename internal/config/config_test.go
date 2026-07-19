@@ -22,12 +22,15 @@ func TestLoad_NoFile(t *testing.T) {
 
 func TestLoad_ValidYAML(t *testing.T) {
 	dir := t.TempDir()
+	// WO-13@v2: pin the declared AWS SDK region input.
 	content := `profile: production
 project: my-gcp-project
 stale_days: 60
 severity_min: medium
 format: json
 timeout: 5m
+regions:
+  - us-east-1
 exclude:
   principals:
     - "arn:aws:iam::123456789012:user/admin"
@@ -56,6 +59,10 @@ exclude:
 	}
 	if cfg.Format != "json" {
 		t.Fatalf("expected format json, got %q", cfg.Format)
+	}
+	// WO-13@v2: verify region parsing remains visible to command resolution.
+	if len(cfg.Regions) != 1 || cfg.Regions[0] != "us-east-1" {
+		t.Fatalf("expected regions [us-east-1], got %#v", cfg.Regions)
 	}
 	if len(cfg.Exclude.Principals) != 1 {
 		t.Fatalf("expected 1 excluded principal, got %d", len(cfg.Exclude.Principals))

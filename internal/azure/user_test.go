@@ -94,6 +94,32 @@ func TestUserScanner_StaleGuestUser(t *testing.T) {
 	}
 }
 
+// WO-15: pin guest exclusion before per-user API calls.
+func TestUserScanner_ExcludeGuests(t *testing.T) {
+	users := []User{
+		{ID: "member-1", UserPrincipalName: "member@example.com", UserType: "Member"},
+		{ID: "guest-1", UserPrincipalName: "guest@example.com", UserType: "Guest"},
+	}
+	mock := &mockGraph{
+		authMethods: map[string][]AuthenticationMethod{
+			"member-1": {{ODataType: "#microsoft.graph.microsoftAuthenticatorAuthenticationMethod"}},
+		},
+		authMethodsErr: map[string]error{"guest-1": fmt.Errorf("guest MFA must not be queried")},
+		secDefaults:    &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+	s := NewUserScanner(mock, users, nil)
+	result, err := s.Scan(context.Background(), iam.ScanConfig{StaleDays: 90, ExcludeGuests: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.PrincipalsScanned != 1 {
+		t.Fatalf("principals scanned = %d, want 1", result.PrincipalsScanned)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("guest processing produced errors: %v", result.Errors)
+	}
+}
+
 func TestUserScanner_HealthyUser(t *testing.T) {
 	recentSignIn := time.Now().AddDate(0, 0, -5)
 	users := []User{

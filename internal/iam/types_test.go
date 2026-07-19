@@ -74,6 +74,14 @@ func TestScanResult_JSON(t *testing.T) {
 	}
 }
 
+// WO-15: pin historical guest inclusion on zero-value ScanConfig.
+func TestScanConfig_ExcludeGuestsZeroValue(t *testing.T) {
+	var cfg ScanConfig
+	if cfg.ExcludeGuests {
+		t.Fatal("zero-value ScanConfig must continue to include Azure guests")
+	}
+}
+
 func TestFinding_NoMetadata(t *testing.T) {
 	f := Finding{
 		ID:             FindingUnattachedPolicy,

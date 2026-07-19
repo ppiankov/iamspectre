@@ -21,13 +21,9 @@ type Client struct {
 	stsAPI STSAPI
 }
 
-// NewClient creates a new AWS client using the specified profile.
-func NewClient(ctx context.Context, profile string) (*Client, error) {
-	var opts []func(*awsconfig.LoadOptions) error
-
-	if profile != "" {
-		opts = append(opts, awsconfig.WithSharedConfigProfile(profile))
-	}
+// WO-13@v2: NewClient applies an optional deterministic SDK region for global IAM scans.
+func NewClient(ctx context.Context, profile, region string) (*Client, error) {
+	opts := loadOptions(profile, region)
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
@@ -38,6 +34,18 @@ func NewClient(ctx context.Context, profile string) (*Client, error) {
 		cfg:    cfg,
 		stsAPI: sts.NewFromConfig(cfg),
 	}, nil
+}
+
+// WO-13@v2: preserve the SDK default chain unless the user configured a region.
+func loadOptions(profile, region string) []func(*awsconfig.LoadOptions) error {
+	var opts []func(*awsconfig.LoadOptions) error
+	if profile != "" {
+		opts = append(opts, awsconfig.WithSharedConfigProfile(profile))
+	}
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
+	return opts
 }
 
 // NewClientWithSTS creates a client with a custom STS implementation (for testing).

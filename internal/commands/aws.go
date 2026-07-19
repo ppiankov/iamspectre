@@ -22,6 +22,9 @@ var awsFlags struct {
 	timeout     time.Duration
 }
 
+// WO-12@v2: keep the CLI and YAML timeout fallback anchored to one default.
+const defaultScanTimeout = 5 * time.Minute
+
 var awsCmd = &cobra.Command{
 	Use:   "aws",
 	Short: "Audit AWS IAM resources",
@@ -36,19 +39,16 @@ func init() {
 	awsCmd.Flags().StringVar(&awsFlags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
 	awsCmd.Flags().StringVar(&awsFlags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
 	awsCmd.Flags().StringVarP(&awsFlags.outputFile, "output", "o", "", "Output file path (default: stdout)")
-	awsCmd.Flags().DurationVar(&awsFlags.timeout, "timeout", 5*time.Minute, "Scan timeout")
+	// WO-12@v2: use the same timeout sentinel consumed by YAML default resolution.
+	awsCmd.Flags().DurationVar(&awsFlags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
 }
 
 func runAWS(cmd *cobra.Command, _ []string) error {
-	ctx := cmd.Context()
-	if awsFlags.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, awsFlags.timeout)
-		defer cancel()
-	}
-
-	// Apply config file defaults where flags were not explicitly set
+	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
 	applyAWSConfigDefaults()
+
+	ctx, cancel := withScanTimeout(cmd.Context(), awsFlags.timeout, context.WithTimeout)
+	defer cancel()
 
 	// Resolve profile from flag or config
 	prof := awsFlags.profile
@@ -59,7 +59,12 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 	slog.Info("Starting AWS IAM audit", "profile", prof, "stale_days", awsFlags.staleDays)
 
 	// Initialize AWS client
-	client, err := awsscanner.NewClient(ctx, prof)
+	region, err := resolveAWSRegion(cfg.Regions)
+	if err != nil {
+		return err
+	}
+
+	client, err := awsscanner.NewClient(ctx, prof, region)
 	if err != nil {
 		return enhanceError("initialize AWS client", err)
 	}
@@ -67,6 +72,7 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 	// Build scan config
 	scanCfg := iam.ScanConfig{
 		StaleDays: awsFlags.staleDays,
+		Exclude:   toExcludeConfig(cfg.Exclude), // WO-11@v2: honor persisted AWS exclusions.
 	}
 
 	// Run AWS IAM scan
@@ -117,6 +123,37 @@ func applyAWSConfigDefaults() {
 	if awsFlags.format == "text" && cfg.Format != "" {
 		awsFlags.format = cfg.Format
 	}
+	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
+	if timeout := cfg.TimeoutDuration(); awsFlags.timeout == defaultScanTimeout && timeout > 0 {
+		awsFlags.timeout = timeout
+	}
+}
+
+// WO-12@v2: construct scan contexts from the already-resolved timeout.
+func withScanTimeout(
+	parent context.Context,
+	timeout time.Duration,
+	create func(context.Context, time.Duration) (context.Context, context.CancelFunc),
+) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return parent, func() {}
+	}
+	return create(parent, timeout)
+}
+
+// WO-13@v2: global IAM scans accept at most one distinct SDK region.
+func resolveAWSRegion(regions []string) (string, error) {
+	resolved := ""
+	for _, region := range regions {
+		if region == "" || region == resolved {
+			continue
+		}
+		if resolved != "" {
+			return "", fmt.Errorf("AWS IAM is account-global; regions must contain at most one distinct non-empty region")
+		}
+		resolved = region
+	}
+	return resolved, nil
 }
 
 func computeTargetHash(profile string) string {

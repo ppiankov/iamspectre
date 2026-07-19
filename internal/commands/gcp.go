@@ -36,19 +36,16 @@ func init() {
 	gcpCmd.Flags().StringVar(&gcpFlags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
 	gcpCmd.Flags().StringVar(&gcpFlags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
 	gcpCmd.Flags().StringVarP(&gcpFlags.outputFile, "output", "o", "", "Output file path (default: stdout)")
-	gcpCmd.Flags().DurationVar(&gcpFlags.timeout, "timeout", 5*time.Minute, "Scan timeout")
+	// WO-12@v2: use the same timeout sentinel consumed by YAML default resolution.
+	gcpCmd.Flags().DurationVar(&gcpFlags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
 }
 
 func runGCP(cmd *cobra.Command, _ []string) error {
-	ctx := cmd.Context()
-	if gcpFlags.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, gcpFlags.timeout)
-		defer cancel()
-	}
-
-	// Apply config file defaults
+	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
 	applyGCPConfigDefaults()
+
+	ctx, cancel := withScanTimeout(cmd.Context(), gcpFlags.timeout, context.WithTimeout)
+	defer cancel()
 
 	project := gcpFlags.project
 	if project == "" {
@@ -69,6 +66,7 @@ func runGCP(cmd *cobra.Command, _ []string) error {
 	// Build scan config
 	scanCfg := iam.ScanConfig{
 		StaleDays: gcpFlags.staleDays,
+		Exclude:   toExcludeConfig(cfg.Exclude), // WO-11@v2: honor persisted GCP exclusions.
 	}
 
 	// Run GCP IAM scan
@@ -118,5 +116,9 @@ func applyGCPConfigDefaults() {
 	}
 	if gcpFlags.format == "text" && cfg.Format != "" {
 		gcpFlags.format = cfg.Format
+	}
+	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
+	if timeout := cfg.TimeoutDuration(); gcpFlags.timeout == defaultScanTimeout && timeout > 0 {
+		gcpFlags.timeout = timeout
 	}
 }

@@ -89,11 +89,12 @@ type ScanResult struct {
 	PrincipalsScanned int       `json:"principals_scanned"`
 }
 
-// ScanConfig holds parameters that control scanning behavior.
+// WO-15: ScanConfig carries the zero-value-safe Azure guest exclusion control.
 type ScanConfig struct {
-	StaleDays   int
-	SeverityMin Severity
-	Exclude     ExcludeConfig
+	StaleDays     int
+	SeverityMin   Severity
+	Exclude       ExcludeConfig
+	ExcludeGuests bool
 }
 
 // ExcludeConfig holds resource exclusion rules.

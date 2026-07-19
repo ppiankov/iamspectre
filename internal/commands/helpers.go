@@ -6,8 +6,25 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ppiankov/iamspectre/internal/config"
+	"github.com/ppiankov/iamspectre/internal/iam"
 	"github.com/ppiankov/iamspectre/internal/report"
 )
+
+// WO-11@v2: convert persisted exclusions into the scanner's lookup representation.
+func toExcludeConfig(exclude config.Exclude) iam.ExcludeConfig {
+	result := iam.ExcludeConfig{
+		ResourceIDs: make(map[string]bool, len(exclude.ResourceIDs)),
+		Principals:  make(map[string]bool, len(exclude.Principals)),
+	}
+	for _, resourceID := range exclude.ResourceIDs {
+		result.ResourceIDs[resourceID] = true
+	}
+	for _, principal := range exclude.Principals {
+		result.Principals[principal] = true
+	}
+	return result
+}
 
 // enhanceError wraps an error with context and suggestions for common cloud issues.
 func enhanceError(action string, err error) error {

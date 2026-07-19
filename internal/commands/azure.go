@@ -7,6 +7,7 @@ import (
 
 	"github.com/ppiankov/iamspectre/internal/analyzer"
 	azurescanner "github.com/ppiankov/iamspectre/internal/azure"
+	"github.com/ppiankov/iamspectre/internal/config"
 	"github.com/ppiankov/iamspectre/internal/iam"
 	"github.com/ppiankov/iamspectre/internal/report"
 	"github.com/spf13/cobra"
@@ -37,19 +38,17 @@ func init() {
 	azureCmd.Flags().StringVar(&azureFlags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
 	azureCmd.Flags().StringVar(&azureFlags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
 	azureCmd.Flags().StringVarP(&azureFlags.outputFile, "output", "o", "", "Output file path (default: stdout)")
-	azureCmd.Flags().DurationVar(&azureFlags.timeout, "timeout", 5*time.Minute, "Scan timeout")
+	// WO-12@v2: use the same timeout sentinel consumed by YAML default resolution.
+	azureCmd.Flags().DurationVar(&azureFlags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
 	azureCmd.Flags().BoolVar(&azureFlags.includeGuests, "include-guests", true, "Include guest/external users in audit")
 }
 
 func runAzure(cmd *cobra.Command, _ []string) error {
-	ctx := cmd.Context()
-	if azureFlags.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, azureFlags.timeout)
-		defer cancel()
-	}
-
+	// WO-12@v2: resolve YAML defaults before the timeout context observes the flag value.
 	applyAzureConfigDefaults()
+
+	ctx, cancel := withScanTimeout(cmd.Context(), azureFlags.timeout, context.WithTimeout)
+	defer cancel()
 
 	tenant := azureFlags.tenant
 	if tenant == "" {
@@ -63,9 +62,7 @@ func runAzure(cmd *cobra.Command, _ []string) error {
 		return enhanceError("initialize Azure client", err)
 	}
 
-	scanCfg := iam.ScanConfig{
-		StaleDays: azureFlags.staleDays,
-	}
+	scanCfg := buildAzureScanConfig(azureFlags.staleDays, cfg.Exclude, azureFlags.includeGuests)
 
 	scanner := azurescanner.NewAzureScanner(client, scanCfg)
 	result, err := scanner.ScanAll(ctx)
@@ -107,6 +104,15 @@ func runAzure(cmd *cobra.Command, _ []string) error {
 	return reporter.Generate(data)
 }
 
+// WO-15: make the existing include-guests flag mapping directly testable.
+func buildAzureScanConfig(staleDays int, exclude config.Exclude, includeGuests bool) iam.ScanConfig {
+	return iam.ScanConfig{
+		StaleDays:     staleDays,
+		Exclude:       toExcludeConfig(exclude), // WO-11@v2: honor persisted Azure exclusions.
+		ExcludeGuests: !includeGuests,
+	}
+}
+
 func applyAzureConfigDefaults() {
 	if azureFlags.staleDays == 90 && cfg.StaleDays > 0 {
 		azureFlags.staleDays = cfg.StaleDays
@@ -116,5 +122,9 @@ func applyAzureConfigDefaults() {
 	}
 	if azureFlags.format == "text" && cfg.Format != "" {
 		azureFlags.format = cfg.Format
+	}
+	// WO-12@v2: a valid YAML timeout replaces only the unchanged CLI default.
+	if timeout := cfg.TimeoutDuration(); azureFlags.timeout == defaultScanTimeout && timeout > 0 {
+		azureFlags.timeout = timeout
 	}
 }
