@@ -95,7 +95,8 @@ func TestServiceAccountScanner_RecentKey(t *testing.T) {
 }
 
 func TestServiceAccountScanner_DisabledSA(t *testing.T) {
-	// WO-69@v2: disabled state alone is not independent staleness evidence.
+	// WO-69@v2: disabled state alone is not staleness, but the fact is preserved as an
+	// informational DISABLED_SA finding (no delete advice), never suppressed to nothing.
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{
 			{Name: "projects/test/serviceAccounts/sa1", Email: "sa1@test.iam.gserviceaccount.com", UniqueId: "123", Disabled: true},
@@ -111,8 +112,18 @@ func TestServiceAccountScanner_DisabledSA(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	if len(result.Findings) != 0 {
-		t.Fatalf("expected no finding for disabled state alone, got %#v", result.Findings)
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected exactly one informational finding, got %#v", result.Findings)
+	}
+	f := result.Findings[0]
+	if f.ID != iam.FindingDisabledSA {
+		t.Fatalf("expected DISABLED_SA, got %s", f.ID)
+	}
+	if f.Severity != iam.SeverityLow {
+		t.Fatalf("expected low severity for disabled fact, got %s", f.Severity)
+	}
+	if f.ID == iam.FindingStaleSA {
+		t.Fatalf("disabled must not be reported as STALE_SA")
 	}
 }
 
@@ -136,11 +147,16 @@ func TestServiceAccountScanner_DisabledWithStaleKey(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	if len(result.Findings) != 1 {
-		t.Fatalf("expected exactly one stale-key finding, got %#v", result.Findings)
+	// WO-69@v2: disabled fact and stale-key evidence are independent axes; both are reported.
+	ids := map[iam.FindingID]bool{}
+	for _, f := range result.Findings {
+		ids[f.ID] = true
 	}
-	if result.Findings[0].ID != iam.FindingStaleSAKey {
-		t.Fatalf("expected STALE_SA_KEY, got %s", result.Findings[0].ID)
+	if !ids[iam.FindingStaleSAKey] {
+		t.Fatalf("expected STALE_SA_KEY, got %#v", result.Findings)
+	}
+	if !ids[iam.FindingDisabledSA] {
+		t.Fatalf("expected DISABLED_SA preserved alongside stale key, got %#v", result.Findings)
 	}
 }
 

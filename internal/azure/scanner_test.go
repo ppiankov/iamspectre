@@ -57,7 +57,9 @@ func TestAzureScanner_ServicePrincipalActivityUnavailable(t *testing.T) {
 	}
 }
 
-// WO-68@v3: report rows join by appId and drive the production STALE_SP path.
+// WO-68@v3: report rows join by appId to enrich the role-activity map, but a stale sign-in
+// derived from the beta report never becomes a severity STALE_SP finding. Present rows also
+// mean no coverage gap. Beta stays enrichment-only; it never drives a severity verdict.
 func TestAzureScanner_ServicePrincipalActivityJoin(t *testing.T) {
 	lastSignIn := time.Now().AddDate(0, 0, -100)
 	mock := &mockGraph{
@@ -69,8 +71,11 @@ func TestAzureScanner_ServicePrincipalActivityJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if findFinding(result.Findings, iam.FindingStaleSP) == nil || len(result.CoverageGaps) != 0 {
-		t.Fatalf("findings=%#v coverage=%#v", result.Findings, result.CoverageGaps)
+	if findFinding(result.Findings, iam.FindingStaleSP) != nil {
+		t.Fatalf("beta-derived stale sign-in must not emit STALE_SP: %#v", result.Findings)
+	}
+	if len(result.CoverageGaps) != 0 {
+		t.Fatalf("present report rows should leave no coverage gap: %#v", result.CoverageGaps)
 	}
 }
 

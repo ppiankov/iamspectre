@@ -170,6 +170,8 @@ func buildSARIFRules() []sarifRule {
 		{ID: string(iam.FindingCrossAccountTrust), ShortDescription: sarifMessage{Text: "Cross-account trust without conditions"}},
 		{ID: string(iam.FindingStaleSA), ShortDescription: sarifMessage{Text: "Stale service account"}},
 		{ID: string(iam.FindingStaleSAKey), ShortDescription: sarifMessage{Text: "Stale service account key"}},
+		// WO-69@v2: disabled is a reversible lifecycle fact, registered as its own informational rule.
+		{ID: string(iam.FindingDisabledSA), ShortDescription: sarifMessage{Text: "Disabled service account"}},
 		{ID: string(iam.FindingOverprivilegedSA), ShortDescription: sarifMessage{Text: "Overprivileged service account"}},
 		{ID: string(iam.FindingStaleGuestUser), ShortDescription: sarifMessage{Text: "Stale Azure AD guest user"}},
 		{ID: string(iam.FindingLegacyAuth), ShortDescription: sarifMessage{Text: "Legacy authentication not blocked"}},

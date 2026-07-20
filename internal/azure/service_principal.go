@@ -3,7 +3,6 @@ package azure
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
@@ -54,45 +53,20 @@ func (s *ServicePrincipalScanner) Scan(ctx context.Context, cfg iam.ScanConfig) 
 	if s.coverage != nil {
 		result.CoverageGaps = append(result.CoverageGaps, *s.coverage)
 	}
-	cutoff := iam.StaleThreshold(time.Now(), cfg.StaleDays) // WO-24@v2: preserve the local clock sample.
 
 	for _, sp := range s.sps {
 		if iam.IsExcluded(cfg, sp.ID, sp.DisplayName) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 
-		s.checkStale(sp, cutoff, result)
+		// WO-68@v3: SP sign-in activity is available only on the Graph beta reports surface, so it
+		// is reported as a coverage gap (see joinServicePrincipalActivity) — never as a severity
+		// finding built on beta data, which is not a supportable production signal. The beta
+		// enrichment survives only to feed the role-activity coverage map.
 		s.checkOverprivileged(sp, result)
 	}
 
 	return result, nil
-}
-
-func (s *ServicePrincipalScanner) checkStale(sp ServicePrincipal, cutoff time.Time, result *iam.ScanResult) {
-	if sp.SignInActivity == nil || sp.SignInActivity.LastSignInDateTime == nil {
-		return
-	}
-
-	lastSignIn := *sp.SignInActivity.LastSignInDateTime
-	if lastSignIn.After(cutoff) {
-		return
-	}
-
-	daysSince := int(time.Since(lastSignIn).Hours() / 24)
-	result.Findings = append(result.Findings, iam.Finding{
-		ID:             iam.FindingStaleSP,
-		Severity:       iam.SeverityHigh,
-		ResourceType:   iam.ResourceAzureServicePrincipal,
-		ResourceID:     sp.ID,
-		ResourceName:   sp.DisplayName,
-		Message:        fmt.Sprintf("Service principal has not signed in for %d days", daysSince),
-		Recommendation: "Review the service principal and remove if no longer needed",
-		Metadata: map[string]any{
-			"app_id":       sp.AppID,
-			"last_sign_in": lastSignIn.Format(time.RFC3339),
-			"days_since":   daysSince,
-		},
-	})
 }
 
 func (s *ServicePrincipalScanner) checkOverprivileged(sp ServicePrincipal, result *iam.ScanResult) {

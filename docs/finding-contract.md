@@ -1,7 +1,5 @@
 # Finding compatibility contract
 
-<!-- WO-72@v2: make downstream identity and severity compatibility explicit. -->
-
 IAMSpectre findings expose two independent compatibility dimensions:
 
 - `id` is the stable machine-readable classification of a finding.

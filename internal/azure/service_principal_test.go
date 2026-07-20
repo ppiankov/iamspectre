@@ -83,7 +83,10 @@ func TestServicePrincipalScanner_SafePermissions(t *testing.T) {
 	}
 }
 
-func TestServicePrincipalScanner_StaleSP(t *testing.T) {
+// WO-68@v3: a beta-derived stale sign-in must never surface as a severity STALE_SP finding.
+// SP sign-in activity lives only on the Graph beta reports surface, which is not a supportable
+// production signal for a severity verdict. It is reported as a coverage gap instead.
+func TestServicePrincipalScanner_StaleSPNotEmittedFromBeta(t *testing.T) {
 	lastSignIn := time.Now().AddDate(0, 0, -120)
 	sps := []ServicePrincipal{
 		{
@@ -102,9 +105,8 @@ func TestServicePrincipalScanner_StaleSP(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	found := findFinding(result.Findings, iam.FindingStaleSP)
-	if found == nil {
-		t.Fatal("expected STALE_SP finding")
+	if findFinding(result.Findings, iam.FindingStaleSP) != nil {
+		t.Fatal("STALE_SP severity finding must not be emitted from beta sign-in data")
 	}
 }
 

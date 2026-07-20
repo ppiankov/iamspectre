@@ -63,6 +63,7 @@ const (
 	FindingCrossAccountTrust FindingID = "CROSS_ACCOUNT_TRUST"
 	FindingStaleSA           FindingID = "STALE_SA"
 	FindingStaleSAKey        FindingID = "STALE_SA_KEY"
+	FindingDisabledSA        FindingID = "DISABLED_SA" // WO-69@v2: disabled is a reversible lifecycle state, reported as an informational fact, not staleness.
 	FindingOverprivilegedSA  FindingID = "OVERPRIVILEGED_SA"
 
 	FindingStaleGuestUser    FindingID = "STALE_GUEST_USER"
