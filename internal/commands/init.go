@@ -98,6 +98,9 @@ format: text
 # Scan timeout
 timeout: 5m
 
+# Include unused AWS service-linked roles (default: false)
+include_service_linked_roles: false
+
 # Resources to exclude from scanning
 # exclude:
 #   principals:

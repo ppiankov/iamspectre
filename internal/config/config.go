@@ -20,6 +20,8 @@ type Config struct {
 	Timeout     string   `yaml:"timeout"`
 	Exclude     Exclude  `yaml:"exclude"`
 	Regions     []string `yaml:"regions"`
+	// WO-44@v2: expose the AWS-only opt-in without changing the safe default.
+	IncludeServiceLinkedRoles bool `yaml:"include_service_linked_roles"`
 }
 
 // Exclude defines resources to skip during scanning.

@@ -38,6 +38,7 @@ iamspectre aws [flags]
 | `--format` | `text` | Output format: text, json, sarif, spectrehub |
 | `-o, --output` | stdout | Output file path |
 | `--timeout` | `5m` | Scan timeout |
+| `--include-service-linked-roles` | `false` | Include low-severity unused service-linked roles |
 
 ### GCP
 
@@ -90,6 +91,7 @@ stale_days: 90
 severity_min: medium
 format: json
 timeout: 5m
+include_service_linked_roles: false
 regions:
   - us-east-1
 exclude:
@@ -105,7 +107,8 @@ config-file values, which take precedence over built-in defaults — so `timeout
 config keys apply only when the matching flag is not explicitly set. `regions` applies to
 AWS only — AWS IAM is account-global, so it accepts at most one distinct region (multiple
 distinct regions are rejected). `exclude` entries are matched against principal identifiers
-and resource IDs during scanning.
+and resource IDs during scanning. `include_service_linked_roles` is AWS-only and defaults
+to false; cross-account trust checks still run for service-linked roles.
 
 Generate a sample config with `iamspectre init`.
 
@@ -218,4 +221,3 @@ Pre-1.0: CLI flags and config schemas may change between minor versions. JSON ou
 - **GCP binding scope.** Only checks project-level IAM bindings, not folder or organization-level.
 - **Azure AD Premium P1.** Stale user/guest detection requires `signInActivity` (Azure AD Premium P1). Without P1, MFA and credential checks still work.
 - **Azure overprivileged detection.** Checks a static set of known dangerous Microsoft Graph API roles, not all possible permission combinations.
-

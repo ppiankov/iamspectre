@@ -3,6 +3,8 @@ package aws
 import (
 	"encoding/json"
 	"net/url"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +28,274 @@ func TestParsePolicyDocument_Basic(t *testing.T) {
 	}
 	if !doc.Statement[0].Action.Contains("s3:GetObject") {
 		t.Fatal("expected action s3:GetObject")
+	}
+}
+
+// WO-41@v2: AWS accepts a single Statement object as well as an array.
+func TestParsePolicyDocument_SingleStatementObject(t *testing.T) {
+	raw := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"*","Resource":"*"}}`
+
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Statement) != 1 {
+		t.Fatalf("expected one statement, got %d", len(doc.Statement))
+	}
+	if !doc.HasWildcardAction() || !doc.HasWildcardResource() {
+		t.Fatal("expected single statement to participate in wildcard detection")
+	}
+}
+
+// WO-41@v2: object-form trust statements retain their principal and action fields.
+func TestParsePolicyDocument_SingleTrustStatementObject(t *testing.T) {
+	raw := `{"Statement":{"Sid":"trust","Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}}`
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Statement) != 1 || doc.Statement[0].Sid != "trust" ||
+		doc.Statement[0].Principal == nil || !doc.Statement[0].Principal.Wildcard ||
+		!doc.Statement[0].HasAssumeRoleAction() {
+		t.Fatalf("trust statement was not preserved: %#v", doc.Statement)
+	}
+}
+
+// WO-41@v2: array normalization preserves statement order and contents.
+func TestParsePolicyDocument_StatementArrayOrder(t *testing.T) {
+	raw := `{"Statement":[{"Sid":"first","Action":"s3:GetObject"},{"Sid":"second","Action":"s3:PutObject"}]}`
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Statement) != 2 || doc.Statement[0].Sid != "first" || doc.Statement[1].Sid != "second" {
+		t.Fatalf("statement order changed: %#v", doc.Statement)
+	}
+}
+
+// WO-41@v2: shape normalization must preserve legacy empty and null behavior.
+func TestParsePolicyDocument_StatementContainerShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{name: "absent", raw: `{"Version":"2012-10-17"}`, want: 0},
+		{name: "null", raw: `{"Version":"2012-10-17","Statement":null}`, want: 0},
+		{name: "empty array", raw: `{"Version":"2012-10-17","Statement":[]}`, want: 0},
+		{name: "empty object", raw: `{"Version":"2012-10-17","Statement":{}}`, want: 1},
+		{name: "null array element", raw: `{"Version":"2012-10-17","Statement":[null]}`, want: 1},
+		{name: "two statements", raw: `{"Version":"2012-10-17","Statement":[{},{}]}`, want: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc, err := ParsePolicyDocument(url.QueryEscape(tt.raw))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(doc.Statement) != tt.want {
+				t.Fatalf("statements = %d, want %d", len(doc.Statement), tt.want)
+			}
+		})
+	}
+}
+
+// WO-41@v2: malformed Statement containers remain hard parse failures.
+func TestParsePolicyDocument_InvalidStatementShapes(t *testing.T) {
+	for _, raw := range []string{
+		`{"Statement":"bad"}`,
+		`{"Statement":42}`,
+		`{"Statement":true}`,
+		`{"Statement":[42]}`,
+	} {
+		if _, err := ParsePolicyDocument(url.QueryEscape(raw)); err == nil {
+			t.Fatalf("expected parse error for %s", raw)
+		}
+	}
+	_, err := ParsePolicyDocument(url.QueryEscape(`{"Statement":[{"Effect":42}]}`))
+	if err == nil || !strings.Contains(err.Error(), "Effect") {
+		t.Fatalf("expected field-qualified array error, got %v", err)
+	}
+}
+
+// WO-21@v3: pin AWS glob semantics, sensitive-action matching, arrays, and Deny handling.
+func TestPolicyStatementAssessActions(t *testing.T) {
+	tests := []struct {
+		name          string
+		statement     string
+		wantState     ActionAssessmentState
+		wantWildcard  bool
+		wantSensitive []string
+	}{
+		{
+			name:          "exact",
+			statement:     `{"Effect":"Allow","Action":"iam:PassRole"}`,
+			wantState:     ActionAssessmentDeterminate,
+			wantSensitive: []string{"iam:PassRole"},
+		},
+		{
+			name:          "mixed case",
+			statement:     `{"Effect":"Allow","Action":"IAM:passrole"}`,
+			wantState:     ActionAssessmentDeterminate,
+			wantSensitive: []string{"iam:PassRole"},
+		},
+		{
+			name:          "iam service wildcard",
+			statement:     `{"Effect":"Allow","Action":"iam:*"}`,
+			wantState:     ActionAssessmentDeterminate,
+			wantWildcard:  true,
+			wantSensitive: sensitiveIAMActions,
+		},
+		{
+			name:         "unrelated service wildcard",
+			statement:    `{"Effect":"Allow","Action":"s3:Get*"}`,
+			wantState:    ActionAssessmentDeterminate,
+			wantWildcard: true,
+		},
+		{
+			name:          "question wildcard",
+			statement:     `{"Effect":"Allow","Action":"iam:PassRol?"}`,
+			wantState:     ActionAssessmentDeterminate,
+			wantWildcard:  true,
+			wantSensitive: []string{"iam:PassRole"},
+		},
+		{
+			name:      "nonmatch",
+			statement: `{"Effect":"Allow","Action":"iam:GetRole"}`,
+			wantState: ActionAssessmentDeterminate,
+		},
+		{
+			name:          "array union",
+			statement:     `{"Effect":"Allow","Action":["s3:GetObject","iam:PutUserPolicy"]}`,
+			wantState:     ActionAssessmentDeterminate,
+			wantSensitive: []string{"iam:PutUserPolicy"},
+		},
+		{
+			name:      "deny wildcard",
+			statement: `{"Effect":"Deny","Action":"*"}`,
+			wantState: ActionAssessmentDeterminate,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var statement PolicyStatement
+			if err := json.Unmarshal([]byte(tt.statement), &statement); err != nil {
+				t.Fatalf("unmarshal statement: %v", err)
+			}
+			got := statement.AssessActions()
+			if got.State != tt.wantState || got.HasWildcard != tt.wantWildcard ||
+				!reflect.DeepEqual(got.SensitiveActions, tt.wantSensitive) {
+				t.Fatalf("AssessActions() = %#v, want state=%s wildcard=%v sensitive=%v", got, tt.wantState, tt.wantWildcard, tt.wantSensitive)
+			}
+		})
+	}
+}
+
+// WO-21@v3: NotAction exposes the fixed-set complement but cannot prove the full granted action set.
+func TestPolicyStatementAssessActions_NotActionComplement(t *testing.T) {
+	var statement PolicyStatement
+	if err := json.Unmarshal([]byte(`{"Effect":"Allow","NotAction":"iam:PassRole"}`), &statement); err != nil {
+		t.Fatalf("unmarshal statement: %v", err)
+	}
+
+	got := statement.AssessActions()
+	want := []string{
+		"iam:AttachRolePolicy",
+		"iam:AttachUserPolicy",
+		"iam:CreatePolicyVersion",
+		"iam:PutRolePolicy",
+		"iam:PutUserPolicy",
+		"iam:SetDefaultPolicyVersion",
+		"iam:UpdateAssumeRolePolicy",
+	}
+	if got.State != ActionAssessmentIndeterminate || got.HasWildcard || !reflect.DeepEqual(got.SensitiveActions, want) {
+		t.Fatalf("AssessActions() = %#v, want indeterminate complement %v", got, want)
+	}
+}
+
+// WO-21@v3: runtime variables and unsupported action forms must remain explicit uncertainty.
+func TestPolicyStatementAssessActions_IndeterminateForms(t *testing.T) {
+	for _, statementJSON := range []string{
+		`{"Effect":"Allow","Action":"iam:${aws:username}"}`,
+		`{"Effect":"Allow","Action":42}`,
+		`{"Effect":"Allow","Action":null}`,
+		`{"Effect":"Allow","NotAction":{"service":"iam"}}`,
+		`{"Effect":"Allow","Action":"iam:*","NotAction":"iam:GetRole"}`,
+		`{"Effect":"Allow"}`,
+	} {
+		var statement PolicyStatement
+		if err := json.Unmarshal([]byte(statementJSON), &statement); err != nil {
+			t.Fatalf("unsupported action form must remain parseable, %s: %v", statementJSON, err)
+		}
+		got := statement.AssessActions()
+		if got.State != ActionAssessmentIndeterminate || got.HasWildcard {
+			t.Fatalf("AssessActions(%s) = %#v, want indeterminate without wildcard", statementJSON, got)
+		}
+	}
+}
+
+// WO-21@v3: callers mutating exported action fields after parsing must override stale shape metadata.
+func TestPolicyStatementAssessActions_FieldMutation(t *testing.T) {
+	var malformed PolicyStatement
+	if err := json.Unmarshal([]byte(`{"Effect":"Allow","Action":42}`), &malformed); err != nil {
+		t.Fatalf("unmarshal malformed statement: %v", err)
+	}
+	malformed.Action = StringOrSlice{"iam:*"}
+	got := malformed.AssessActions()
+	if got.State != ActionAssessmentDeterminate || !got.HasWildcard ||
+		!reflect.DeepEqual(got.SensitiveActions, sensitiveIAMActions) {
+		t.Fatalf("mutated malformed action assessment = %#v", got)
+	}
+
+	var cleared PolicyStatement
+	if err := json.Unmarshal([]byte(`{"Effect":"Allow","Action":"iam:*"}`), &cleared); err != nil {
+		t.Fatalf("unmarshal valid statement: %v", err)
+	}
+	cleared.Action = nil
+	got = cleared.AssessActions()
+	if got.State != ActionAssessmentIndeterminate || got.HasWildcard || len(got.SensitiveActions) != 0 {
+		t.Fatalf("cleared action assessment = %#v", got)
+	}
+}
+
+// WO-21@v3: NotResource is preserved but cannot suppress a concrete Resource breadth result.
+func TestParsePolicyDocument_NotResourceDoesNotSuppressBreadth(t *testing.T) {
+	raw := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*","NotResource":"arn:aws:s3:::private/*"}]}`
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !doc.HasWildcardResource() {
+		t.Fatal("concrete Resource wildcard must remain broad when NotResource is present")
+	}
+	if len(doc.Statement[0].NotResource) != 1 {
+		t.Fatalf("NotResource was not preserved: %#v", doc.Statement[0].NotResource)
+	}
+}
+
+// WO-21@v3: the compatibility method reports only determinate Action glob evidence.
+func TestParsePolicyDocument_WildcardActionAssessment(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "star", raw: `{"Statement":{"Effect":"Allow","Action":"s3:Get*"}}`, want: true},
+		{name: "question", raw: `{"Statement":{"Effect":"Allow","Action":"s3:GetObjec?"}}`, want: true},
+		{name: "variable", raw: `{"Statement":{"Effect":"Allow","Action":"s3:${name}*"}}`, want: false},
+		{name: "not action", raw: `{"Statement":{"Effect":"Allow","NotAction":"s3:GetObject"}}`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc, err := ParsePolicyDocument(url.QueryEscape(tt.raw))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := doc.HasWildcardAction(); got != tt.want {
+				t.Fatalf("HasWildcardAction() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -31,6 +32,7 @@ func (ew *errWriter) println(s string) {
 }
 
 // WO-31@v2: keep the text report self-describing and preserve partial-scan evidence.
+// WO-42@v2, WO-43@v2, WO-47: render deterministic rows with complete, valid field identity.
 func (r *TextReporter) Generate(data Data) error {
 	w := &errWriter{w: r.Writer}
 
@@ -58,12 +60,17 @@ func (r *TextReporter) Generate(data Data) error {
 	ew.println("FINDING_ID\tSEVERITY\tTYPE\tRESOURCE\tMESSAGE\tRECOMMENDATION")
 	ew.println("----------\t--------\t----\t--------\t-------\t--------------")
 
-	for _, f := range data.Findings {
+	// WO-42@v2: sort a copy by a total order so rendering is deterministic and side-effect free.
+	findings := append([]iam.Finding(nil), data.Findings...)
+	sort.Slice(findings, func(left, right int) bool {
+		return findingTextLess(findings[left], findings[right])
+	})
+	for _, f := range findings {
 		ew.printf("%s\t%s\t%s\t%s\t%s\t%s\n",
 			f.ID,
 			severityLabel(f.Severity),
 			f.ResourceType,
-			truncate(f.ResourceID, 40),
+			f.ResourceID, // WO-43@v2: preserve the complete actionable resource identity.
 			truncate(f.Message, 50),
 			truncate(f.Recommendation, 50),
 		)
@@ -80,6 +87,7 @@ func (r *TextReporter) Generate(data Data) error {
 	return w.err
 }
 
+// WO-42@v2: keep summary output deterministic alongside the finding table.
 func printTextSummary(w *errWriter, data Data) {
 	w.println("")
 	w.println(strings.Repeat("-", 60))
@@ -88,7 +96,9 @@ func printTextSummary(w *errWriter, data Data) {
 
 	if len(data.Summary.BySeverity) > 0 {
 		w.printf("By severity:")
-		for sev, count := range data.Summary.BySeverity {
+		// WO-42@v2: map iteration must not reintroduce nondeterministic report bytes.
+		for _, sev := range orderedSummarySeverities(data.Summary.BySeverity) {
+			count := data.Summary.BySeverity[sev]
 			w.printf(" %s=%d", sev, count)
 		}
 		w.println("")
@@ -100,6 +110,55 @@ func printTextSummary(w *errWriter, data Data) {
 			w.printf("  - %s\n", e)
 		}
 	}
+}
+
+// WO-42@v2: define a total finding order independent of scanner aggregation order.
+func findingTextLess(left, right iam.Finding) bool {
+	leftRank, rightRank := iam.SeverityRank(left.Severity), iam.SeverityRank(right.Severity)
+	if leftRank != rightRank {
+		return leftRank > rightRank
+	}
+	leftFields := []string{
+		string(left.Severity), string(left.ID), string(left.ResourceType),
+		left.ResourceID, left.Message, left.Recommendation,
+	}
+	rightFields := []string{
+		string(right.Severity), string(right.ID), string(right.ResourceType),
+		right.ResourceID, right.Message, right.Recommendation,
+	}
+	for index := range leftFields {
+		if leftFields[index] != rightFields[index] {
+			return leftFields[index] < rightFields[index]
+		}
+	}
+	return false
+}
+
+// WO-42@v2: render known severities by risk and unknown extensions lexicographically.
+func orderedSummarySeverities(counts map[string]int) []string {
+	known := []string{
+		string(iam.SeverityCritical),
+		string(iam.SeverityHigh),
+		string(iam.SeverityMedium),
+		string(iam.SeverityLow),
+	}
+	ordered := make([]string, 0, len(counts))
+	for _, severity := range known {
+		if _, exists := counts[severity]; exists {
+			ordered = append(ordered, severity)
+		}
+	}
+	unknown := make([]string, 0, len(counts)-len(ordered))
+	for severity := range counts {
+		if severity != string(iam.SeverityCritical) &&
+			severity != string(iam.SeverityHigh) &&
+			severity != string(iam.SeverityMedium) &&
+			severity != string(iam.SeverityLow) {
+			unknown = append(unknown, severity)
+		}
+	}
+	sort.Strings(unknown)
+	return append(ordered, unknown...)
 }
 
 func severityLabel(s iam.Severity) string {
@@ -117,9 +176,14 @@ func severityLabel(s iam.Severity) string {
 	}
 }
 
+// WO-48: bound human-readable fields without splitting UTF-8 code points.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s) // WO-48: byte slicing can corrupt multibyte report fields.
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }

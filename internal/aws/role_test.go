@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,7 @@ func TestRoleScanner_RecentlyUsedRole(t *testing.T) {
 	}
 }
 
+// WO-44@v2: default scanning suppresses only unused-role noise for every canonical shape.
 func TestRoleScanner_ServiceLinkedRoleSkipped(t *testing.T) {
 	mock := &mockIAM{
 		roles: []iamtypes.Role{
@@ -111,6 +113,16 @@ func TestRoleScanner_ServiceLinkedRoleSkipped(t *testing.T) {
 				Path:         awssdk.String("/aws-service-role/ecs.amazonaws.com/"),
 				CreateDate:   awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
 				RoleLastUsed: nil,
+			},
+			{
+				RoleName: awssdk.String("custom-name"),
+				Arn:      awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/custom-name"),
+				Path:     awssdk.String("/"), CreateDate: awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
+			},
+			{
+				RoleName: awssdk.String("AWSServiceRoleForNameOnly"),
+				Arn:      awssdk.String("arn:aws:iam::123456789012:role/AWSServiceRoleForNameOnly"),
+				Path:     awssdk.String("/"), CreateDate: awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
 			},
 		},
 	}
@@ -123,6 +135,220 @@ func TestRoleScanner_ServiceLinkedRoleSkipped(t *testing.T) {
 
 	if len(result.Findings) != 0 {
 		t.Fatalf("expected no findings for service-linked role, got %d", len(result.Findings))
+	}
+}
+
+// WO-44@v2: opted-in stale service-linked roles use restrained guidance.
+// WO-51: stale Identity Center roles retain family-specific low-risk guidance.
+func TestRoleScanner_AWSOwnedStaleRoleGuidance(t *testing.T) {
+	stale := time.Now().UTC().AddDate(0, 0, -120)
+	tests := []struct {
+		name     string
+		role     iamtypes.Role
+		cfg      iam.ScanConfig
+		guidance string
+	}{
+		{
+			name: "service linked",
+			role: iamtypes.Role{
+				RoleName:     awssdk.String("AWSServiceRoleForExample"),
+				Arn:          awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/AWSServiceRoleForExample"),
+				Path:         awssdk.String("/aws-service-role/example.amazonaws.com/"),
+				CreateDate:   awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
+				RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale},
+			},
+			cfg:      iam.ScanConfig{StaleDays: 90, IncludeServiceLinkedRoles: true},
+			guidance: "owning AWS service",
+		},
+		{
+			name: "identity center",
+			role: iamtypes.Role{
+				RoleName:     awssdk.String("AWSReservedSSO_ReadOnly_0123456789abcdef"),
+				Arn:          awssdk.String("arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ReadOnly_0123456789abcdef"),
+				Path:         awssdk.String("/aws-reserved/sso.amazonaws.com/"),
+				CreateDate:   awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
+				RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale},
+			},
+			cfg:      iam.ScanConfig{StaleDays: 90},
+			guidance: "IAM Identity Center",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := NewRoleScanner(&mockIAM{roles: []iamtypes.Role{tt.role}}, "123456789012").Scan(context.Background(), tt.cfg)
+			if err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			finding := findFinding(result.Findings, iam.FindingUnusedRole)
+			if finding == nil || finding.Severity != iam.SeverityLow || !strings.Contains(finding.Recommendation, tt.guidance) {
+				t.Fatalf("finding = %#v, want low severity and %q guidance", finding, tt.guidance)
+			}
+		})
+	}
+}
+
+// WO-44@v2: service-linked classification uses only structural AWS identifiers.
+func TestIsServiceLinkedRole(t *testing.T) {
+	tests := []struct {
+		name string
+		role iamtypes.Role
+		want bool
+	}{
+		{name: "path", role: iamtypes.Role{Path: awssdk.String("/aws-service-role/ecs.amazonaws.com/")}, want: true},
+		{name: "arn", role: iamtypes.Role{Arn: awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/ecs.amazonaws.com/example")}, want: true},
+		{name: "name", role: iamtypes.Role{RoleName: awssdk.String("AWSServiceRoleForECS")}, want: true},
+		{name: "customer", role: iamtypes.Role{Path: awssdk.String("/"), RoleName: awssdk.String("AWS-Custom")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isServiceLinkedRole(tt.role); got != tt.want {
+				t.Fatalf("isServiceLinkedRole() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-51: both reserved path and canonical name are required for Identity Center classification.
+func TestIsIdentityCenterRole(t *testing.T) {
+	canonical := iamtypes.Role{
+		Path:     awssdk.String("/aws-reserved/sso.amazonaws.com/"),
+		RoleName: awssdk.String("AWSReservedSSO_ReadOnly_0123456789abcdef"),
+	}
+	if !isIdentityCenterRole(canonical) {
+		t.Fatal("expected canonical Identity Center role")
+	}
+	canonical.Path = awssdk.String("/")
+	if isIdentityCenterRole(canonical) {
+		t.Fatal("name alone must not classify a customer role")
+	}
+	canonical.Path = awssdk.String("/aws-reserved/sso.amazonaws.com/")
+	canonical.RoleName = awssdk.String("custom")
+	if isIdentityCenterRole(canonical) {
+		t.Fatal("path alone must not classify a customer role")
+	}
+}
+
+// WO-44@v2: opt-in service-linked findings use restrained severity and guidance.
+func TestRoleScanner_ServiceLinkedRoleIncluded(t *testing.T) {
+	created := time.Now().UTC().AddDate(-2, 0, 0)
+	mock := &mockIAM{roles: []iamtypes.Role{{
+		RoleName: awssdk.String("AWSServiceRoleForExample"),
+		Arn:      awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/AWSServiceRoleForExample"),
+		Path:     awssdk.String("/aws-service-role/example.amazonaws.com/"), CreateDate: &created,
+	}}}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(
+		context.Background(),
+		iam.ScanConfig{StaleDays: 90, IncludeServiceLinkedRoles: true},
+	)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	finding := findFinding(result.Findings, iam.FindingUnusedRole)
+	if finding == nil || finding.Severity != iam.SeverityLow {
+		t.Fatalf("service-linked finding = %#v, want low UNUSED_ROLE", finding)
+	}
+	if !strings.Contains(finding.Recommendation, "owning AWS service") {
+		t.Fatalf("recommendation = %q", finding.Recommendation)
+	}
+}
+
+// WO-44@v2: UNUSED_ROLE suppression must not bypass independent trust analysis.
+func TestRoleScanner_ServiceLinkedRoleStillChecksTrust(t *testing.T) {
+	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}}`)
+	mock := &mockIAM{roles: []iamtypes.Role{{
+		RoleName:                 awssdk.String("AWSServiceRoleForExample"),
+		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/AWSServiceRoleForExample"),
+		Path:                     awssdk.String("/aws-service-role/example.amazonaws.com/"),
+		CreateDate:               awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
+		AssumeRolePolicyDocument: awssdk.String(trust),
+	}}}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
+		t.Fatal("expected UNUSED_ROLE suppression")
+	}
+	if findFinding(result.Findings, iam.FindingCrossAccountTrust) == nil {
+		t.Fatal("expected CROSS_ACCOUNT_TRUST finding")
+	}
+}
+
+// WO-50: missing creation evidence cannot justify a fabricated unused-role age.
+func TestRoleScanner_MissingCreateDate(t *testing.T) {
+	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}}`)
+	stale := time.Now().UTC().AddDate(0, 0, -120)
+	mock := &mockIAM{roles: []iamtypes.Role{
+		{
+			RoleName:                 awssdk.String("unknown-age"),
+			Arn:                      awssdk.String("arn:aws:iam::123456789012:role/unknown-age"),
+			Path:                     awssdk.String("/"),
+			AssumeRolePolicyDocument: awssdk.String(trust),
+		},
+		{
+			RoleName:     awssdk.String("later-stale-role"),
+			Arn:          awssdk.String("arn:aws:iam::123456789012:role/later-stale-role"),
+			Path:         awssdk.String("/"),
+			CreateDate:   awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
+			RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale},
+		},
+	}}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	for _, finding := range result.Findings {
+		if finding.ID == iam.FindingUnusedRole && finding.ResourceName == "unknown-age" {
+			t.Fatal("missing CreateDate must not emit UNUSED_ROLE")
+		}
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "unknown-age") {
+		t.Fatalf("errors = %#v, want one role-qualified error", result.Errors)
+	}
+	if findFinding(result.Findings, iam.FindingCrossAccountTrust) == nil {
+		t.Fatal("missing CreateDate must not bypass trust evaluation")
+	}
+	if finding := findFinding(result.Findings, iam.FindingUnusedRole); finding == nil || finding.ResourceName != "later-stale-role" {
+		t.Fatalf("subsequent role was not evaluated: %#v", result.Findings)
+	}
+}
+
+// WO-51: Identity Center roles require assignment-oriented remediation.
+func TestRoleScanner_IdentityCenterReservedRole(t *testing.T) {
+	created := time.Now().UTC().AddDate(-2, 0, 0)
+	mock := &mockIAM{roles: []iamtypes.Role{{
+		RoleName: awssdk.String("AWSReservedSSO_ReadOnly_0123456789abcdef"),
+		Arn:      awssdk.String("arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ReadOnly_0123456789abcdef"),
+		Path:     awssdk.String("/aws-reserved/sso.amazonaws.com/"), CreateDate: &created,
+	}}}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	finding := findFinding(result.Findings, iam.FindingUnusedRole)
+	if finding == nil || finding.Severity != iam.SeverityLow {
+		t.Fatalf("Identity Center finding = %#v, want low UNUSED_ROLE", finding)
+	}
+	if !strings.Contains(finding.Recommendation, "IAM Identity Center") {
+		t.Fatalf("recommendation = %q", finding.Recommendation)
+	}
+}
+
+// WO-46: malformed trust documents must be present in reportable scan errors.
+func TestRoleScanner_TrustPolicyParseError(t *testing.T) {
+	mock := &mockIAM{roles: []iamtypes.Role{{
+		RoleName:                 awssdk.String("bad-trust"),
+		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/bad-trust"),
+		Path:                     awssdk.String("/"),
+		CreateDate:               awssdk.Time(time.Now().UTC()),
+		AssumeRolePolicyDocument: awssdk.String(url.QueryEscape(`{"Statement":42}`)),
+	}}}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "bad-trust") {
+		t.Fatalf("errors = %#v, want one role-qualified parse error", result.Errors)
 	}
 }
 

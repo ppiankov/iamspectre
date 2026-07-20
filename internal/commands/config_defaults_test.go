@@ -223,3 +223,39 @@ func TestResolveCommonOptions(t *testing.T) {
 		t.Fatalf("resolved exclusions = %#v", got.scanConfig.Exclude)
 	}
 }
+
+// WO-44@v2: explicit AWS boolean flags take precedence even at false.
+func TestAWSServiceLinkedRoleConfigPrecedence(t *testing.T) {
+	oldConfig := cfg
+	oldValue := awsFlags.includeServiceLinkedRoles
+	flag := awsCmd.Flags().Lookup("include-service-linked-roles")
+	oldChanged := flag.Changed
+	t.Cleanup(func() {
+		cfg = oldConfig
+		awsFlags.includeServiceLinkedRoles = oldValue
+		flag.Changed = oldChanged
+	})
+
+	cfg.IncludeServiceLinkedRoles = true
+	awsFlags.includeServiceLinkedRoles = false
+	flag.Changed = false
+	applyAWSConfigDefaults(awsCmd)
+	if !awsFlags.includeServiceLinkedRoles {
+		t.Fatal("expected unchanged flag to inherit YAML true")
+	}
+
+	awsFlags.includeServiceLinkedRoles = false
+	flag.Changed = true
+	applyAWSConfigDefaults(awsCmd)
+	if awsFlags.includeServiceLinkedRoles {
+		t.Fatal("expected explicit false to override YAML true")
+	}
+
+	cfg.IncludeServiceLinkedRoles = false
+	awsFlags.includeServiceLinkedRoles = true
+	flag.Changed = true
+	applyAWSConfigDefaults(awsCmd)
+	if !awsFlags.includeServiceLinkedRoles {
+		t.Fatal("expected explicit true to override YAML false")
+	}
+}

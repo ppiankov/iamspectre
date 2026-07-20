@@ -89,6 +89,7 @@ func (s *PolicyScanner) checkWildcardPolicy(ctx context.Context, policy iamtypes
 	doc, err := ParsePolicyDocument(*out.PolicyVersion.Document)
 	if err != nil {
 		slog.Warn("Failed to parse policy document", "policy", policyName, "error", err)
+		result.Errors = append(result.Errors, fmt.Sprintf("parse policy document %s: %v", policyName, err)) // WO-46: report lost scan coverage.
 		return
 	}
 

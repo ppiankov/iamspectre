@@ -13,8 +13,15 @@ import (
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
 
-// serviceLinkedRolePathPrefix identifies AWS service-linked roles that should be skipped.
-const serviceLinkedRolePathPrefix = "/aws-service-role/"
+const (
+	serviceLinkedRolePathPrefix  = "/aws-service-role/"
+	serviceLinkedRoleNamePrefix  = "AWSServiceRoleFor"
+	identityCenterRolePathPrefix = "/aws-reserved/sso.amazonaws.com/"
+	identityCenterRoleNamePrefix = "AWSReservedSSO_"
+	serviceLinkedRoleGuidance    = "Review the owning AWS service and remove the role through that service if appropriate"
+	identityCenterRoleGuidance   = "Review assignments and permission sets in IAM Identity Center instead of deleting this role directly"
+	customerManagedRoleGuidance  = "Delete the role if no longer needed"
+)
 
 // RoleScanner detects unused roles and cross-account trust issues.
 type RoleScanner struct {
@@ -51,42 +58,42 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 			continue
 		}
 
-		// Skip service-linked roles
-		if strings.HasPrefix(awssdk.ToString(role.Path), serviceLinkedRolePathPrefix) {
-			continue
-		}
+		serviceLinked := isServiceLinkedRole(role)
+		includeUnused := !serviceLinked || cfg.IncludeServiceLinkedRoles
+		severity, recommendation := unusedRolePresentation(role, serviceLinked)
 
-		// Check if role is unused
-		if role.RoleLastUsed != nil && role.RoleLastUsed.LastUsedDate != nil {
-			if role.RoleLastUsed.LastUsedDate.Before(threshold) {
-				daysSince := int(now.Sub(*role.RoleLastUsed.LastUsedDate).Hours() / 24)
-				result.Findings = append(result.Findings, iam.Finding{
-					ID:             iam.FindingUnusedRole,
-					Severity:       iam.SeverityMedium,
-					ResourceType:   iam.ResourceIAMRole,
-					ResourceID:     roleARN,
-					ResourceName:   roleName,
-					Message:        fmt.Sprintf("Role not assumed in %d days", daysSince),
-					Recommendation: "Delete the role if no longer needed",
-					Metadata: map[string]any{
-						"last_used":      role.RoleLastUsed.LastUsedDate.Format(time.RFC3339),
-						"days_since_use": daysSince,
-					},
-				})
-			}
-		} else {
-			// Role has never been used — check if old enough to flag
-			createDate := awssdk.ToTime(role.CreateDate)
-			if createDate.Before(threshold) {
+		// WO-44@v2: suppress only UNUSED_ROLE; independent trust analysis always follows.
+		if includeUnused {
+			if role.RoleLastUsed != nil && role.RoleLastUsed.LastUsedDate != nil {
+				if role.RoleLastUsed.LastUsedDate.Before(threshold) {
+					daysSince := int(now.Sub(*role.RoleLastUsed.LastUsedDate).Hours() / 24)
+					result.Findings = append(result.Findings, iam.Finding{
+						ID:             iam.FindingUnusedRole,
+						Severity:       severity,
+						ResourceType:   iam.ResourceIAMRole,
+						ResourceID:     roleARN,
+						ResourceName:   roleName,
+						Message:        fmt.Sprintf("Role not assumed in %d days", daysSince),
+						Recommendation: recommendation,
+						Metadata: map[string]any{
+							"last_used":      role.RoleLastUsed.LastUsedDate.Format(time.RFC3339),
+							"days_since_use": daysSince,
+						},
+					})
+				}
+			} else if role.CreateDate == nil {
+				// WO-50: absent age evidence cannot justify a synthetic UNUSED_ROLE finding.
+				result.Errors = append(result.Errors, fmt.Sprintf("evaluate unused role %s: creation date is missing", roleName))
+			} else if createDate := awssdk.ToTime(role.CreateDate); createDate.Before(threshold) {
 				daysSince := int(now.Sub(createDate).Hours() / 24)
 				result.Findings = append(result.Findings, iam.Finding{
 					ID:             iam.FindingUnusedRole,
-					Severity:       iam.SeverityMedium,
+					Severity:       severity,
 					ResourceType:   iam.ResourceIAMRole,
 					ResourceID:     roleARN,
 					ResourceName:   roleName,
 					Message:        fmt.Sprintf("Role never assumed (created %d days ago)", daysSince),
-					Recommendation: "Delete the role if no longer needed",
+					Recommendation: recommendation,
 					Metadata: map[string]any{
 						"created":        createDate.Format(time.RFC3339),
 						"days_since_use": daysSince,
@@ -103,6 +110,31 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	return result, nil
 }
 
+// WO-44@v2: recognize only structural service-linked path, ARN, or canonical name shapes.
+func isServiceLinkedRole(role iamtypes.Role) bool {
+	return strings.HasPrefix(awssdk.ToString(role.Path), serviceLinkedRolePathPrefix) ||
+		strings.Contains(awssdk.ToString(role.Arn), ":role/aws-service-role/") ||
+		strings.HasPrefix(awssdk.ToString(role.RoleName), serviceLinkedRoleNamePrefix)
+}
+
+// WO-51: require both canonical Identity Center path and reserved role name.
+func isIdentityCenterRole(role iamtypes.Role) bool {
+	return strings.HasPrefix(awssdk.ToString(role.Path), identityCenterRolePathPrefix) &&
+		strings.HasPrefix(awssdk.ToString(role.RoleName), identityCenterRoleNamePrefix)
+}
+
+// WO-49: centralize the safe remediation boundary for AWS-owned role families.
+// WO-44@v2: AWS-owned roles need restrained severity and lifecycle-specific guidance.
+func unusedRolePresentation(role iamtypes.Role, serviceLinked bool) (iam.Severity, string) {
+	if serviceLinked {
+		return iam.SeverityLow, serviceLinkedRoleGuidance
+	}
+	if isIdentityCenterRole(role) {
+		return iam.SeverityLow, identityCenterRoleGuidance
+	}
+	return iam.SeverityMedium, customerManagedRoleGuidance
+}
+
 func (s *RoleScanner) checkCrossAccountTrust(policyDoc *string, roleARN, roleName string, result *iam.ScanResult) {
 	if policyDoc == nil {
 		return
@@ -111,6 +143,7 @@ func (s *RoleScanner) checkCrossAccountTrust(policyDoc *string, roleARN, roleNam
 	doc, err := ParsePolicyDocument(*policyDoc)
 	if err != nil {
 		slog.Warn("Failed to parse trust policy", "role", roleName, "error", err)
+		result.Errors = append(result.Errors, fmt.Sprintf("parse trust policy %s: %v", roleName, err)) // WO-46: preserve lost coverage in reports.
 		return
 	}
 

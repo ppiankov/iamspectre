@@ -172,6 +172,8 @@ type ScanConfig struct {
 	SeverityMin   Severity
 	Exclude       ExcludeConfig
 	ExcludeGuests bool
+	// WO-44@v2: zero keeps noisy service-linked UNUSED_ROLE findings suppressed by default.
+	IncludeServiceLinkedRoles bool
 }
 
 // ExcludeConfig holds resource exclusion rules.
