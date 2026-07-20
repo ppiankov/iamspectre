@@ -250,6 +250,7 @@ func TestJSONReporter(t *testing.T) {
 	}
 }
 
+// WO-74@v2: pin canonical locations, stable IDs, severity fidelity, and summary field names.
 func TestSpectreHubReporter(t *testing.T) {
 	var buf bytes.Buffer
 	r := &SpectreHubReporter{Writer: &buf}
@@ -262,6 +263,22 @@ func TestSpectreHubReporter(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, `"schema": "spectre/v1"`) {
 		t.Fatal("expected spectre/v1 schema")
+	}
+	if strings.Contains(output, `"resource_id"`) || strings.Contains(output, `"total_findings"`) {
+		t.Fatalf("native report fields leaked into spectre/v1: %s", output)
+	}
+	var envelope spectrehubEnvelope
+	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Findings) != 2 || envelope.Findings[0].Location == envelope.Findings[1].Location || envelope.Findings[0].Location == "" {
+		t.Fatalf("finding locations = %#v", envelope.Findings)
+	}
+	if envelope.Findings[0].ID != iam.FindingNoMFA || envelope.Findings[0].Severity != iam.SeverityCritical {
+		t.Fatalf("finding identity/severity = %#v", envelope.Findings[0])
+	}
+	if envelope.Summary.Total != 2 || envelope.Summary.Medium != 1 {
+		t.Fatalf("summary = %#v", envelope.Summary)
 	}
 }
 
@@ -562,6 +579,13 @@ func TestReporters_CoverageManifestPlane(t *testing.T) {
 	}
 	if !strings.Contains(jsonBuffer.String(), `"coverage_manifest"`) || strings.Contains(jsonBuffer.String(), `"id":"STALE_SP"`) {
 		t.Fatalf("JSON mixed coverage with findings: %s", jsonBuffer.String())
+	}
+	var hubBuffer bytes.Buffer
+	if err := (&SpectreHubReporter{Writer: &hubBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(hubBuffer.String(), `"coverage_manifest"`) || strings.Contains(hubBuffer.String(), `"location": ""`) {
+		t.Fatalf("SpectreHub mixed coverage with findings: %s", hubBuffer.String())
 	}
 
 	var textBuffer bytes.Buffer
