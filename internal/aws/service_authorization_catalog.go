@@ -6,17 +6,17 @@
 
 package aws
 
-// WO-64@v3: expose the pinned evidence digest to catalog consumers.
+// WO-64@v4: expose the pinned evidence digest to catalog consumers.
 const resourceApplicabilityCatalogDigest = "70b7fffa355168623052e1dfa6b419cc20e262fd981c58fbefca3f9dd1a716e7"
 
-// WO-64@v3: resourceApplicabilityCatalog is pinned generated evidence, not runtime inference.
+// WO-64@v4: resourceApplicabilityCatalog is pinned generated evidence, not runtime inference.
 var resourceApplicabilityCatalog = map[string]ResourceApplicability{
 	"ssm:AddTagsToResource":   ResourceApplicabilitySupported,
 	"ssm:DescribeActivations": ResourceApplicabilityNone,
 	"ssm:GetDocument":         ResourceApplicabilitySupported,
 }
 
-// WO-64@v3: ResourceApplicability reports only what the AWS JSON schema proves.
+// WO-64@v4: ResourceApplicability reports only what the AWS JSON schema proves.
 type ResourceApplicability string
 
 const (

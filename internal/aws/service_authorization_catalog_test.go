@@ -14,7 +14,7 @@ const (
 	testCatalogRetrievedAt = "2026-07-20T08:15:00Z"
 )
 
-// WO-64@v3: pin examples of both applicability classes the official JSON can prove.
+// WO-64@v4: pin examples of both applicability classes the official JSON can prove.
 func TestResourceApplicabilityCatalog(t *testing.T) {
 	tests := []struct {
 		action string
@@ -31,7 +31,7 @@ func TestResourceApplicabilityCatalog(t *testing.T) {
 	}
 }
 
-// WO-64@v3: checked-in generated data must be byte-identical to offline regeneration.
+// WO-64@v4: checked-in generated data must be byte-identical to offline regeneration.
 func TestServiceAuthorizationCatalogReproducible(t *testing.T) {
 	first := generateCatalog(t, "testdata/service_authorization_reference.json", testCatalogSourceURL, testCatalogRetrievedAt)
 	second := generateCatalog(t, "testdata/service_authorization_reference.json", testCatalogSourceURL, testCatalogRetrievedAt)
@@ -56,12 +56,12 @@ func TestServiceAuthorizationCatalogReproducible(t *testing.T) {
 	}
 }
 
-// WO-64@v3: normalize only Git's CRLF checkout representation, never fixture evidence.
+// WO-64@v4: normalize only Git's CRLF checkout representation, never fixture evidence.
 func normalizeCatalogCheckout(content []byte) []byte {
 	return bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
 }
 
-// WO-64@v3: pin identical comparison content for LF and CRLF checkouts.
+// WO-64@v4: pin identical comparison content for LF and CRLF checkouts.
 func TestNormalizeCatalogCheckout(t *testing.T) {
 	want := []byte("line one\nline two\n")
 	for _, content := range [][]byte{want, []byte("line one\r\nline two\r\n")} {
@@ -71,7 +71,7 @@ func TestNormalizeCatalogCheckout(t *testing.T) {
 	}
 }
 
-// WO-64@v3: exact official-schema input bytes are provenance, so whitespace drift changes the digest.
+// WO-64@v4: exact official-schema input bytes are provenance, so whitespace drift changes the digest.
 func TestServiceAuthorizationCatalogDigestDrift(t *testing.T) {
 	input, err := os.ReadFile("testdata/service_authorization_reference.json")
 	if err != nil {
@@ -88,7 +88,7 @@ func TestServiceAuthorizationCatalogDigestDrift(t *testing.T) {
 	}
 }
 
-// WO-64@v3: bounded fixtures may omit data but the decoder accepts every official top-level field.
+// WO-64@v4: bounded fixtures may omit data but the decoder accepts every official top-level field.
 func TestServiceAuthorizationCatalogAcceptsOfficialTopLevelSchema(t *testing.T) {
 	input := `{"Name":"ssm","Actions":[{"Name":"GetDocument","Resources":[{"Name":"document"}]}],"ConditionKeys":[],"Operations":[],"Resources":[],"Version":"v1.4"}`
 	inputPath := filepath.Join(t.TempDir(), "official-schema.json")
@@ -101,7 +101,7 @@ func TestServiceAuthorizationCatalogAcceptsOfficialTopLevelSchema(t *testing.T) 
 	}
 }
 
-// WO-64@v3: upstream schema ambiguity and invalid provenance fail closed with field context.
+// WO-64@v4: upstream schema ambiguity and invalid provenance fail closed with field context.
 func TestServiceAuthorizationCatalogRejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name, input, sourceURL, retrievedAt, want string
@@ -137,7 +137,7 @@ func TestServiceAuthorizationCatalogRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-// WO-64@v3: invoke the offline generator through its user-facing command contract.
+// WO-64@v4: invoke the offline generator through its user-facing command contract.
 func generateCatalog(t *testing.T, inputPath, sourceURL, retrievedAt string) []byte {
 	t.Helper()
 	outputPath := filepath.Join(t.TempDir(), "catalog.go")

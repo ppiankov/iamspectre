@@ -1,0 +1,3 @@
+# WO-64@v4: preserve byte-exact catalog evidence across Git checkouts.
+internal/aws/testdata/service_authorization_reference.json text eol=lf
+internal/aws/service_authorization_catalog.go text eol=lf
