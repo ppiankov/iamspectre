@@ -5,6 +5,20 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-07-20
+
+### Fixed
+
+- AWS policies whose `Statement` is a single object (not an array) are now parsed instead of silently skipped, closing a policy-analysis coverage gap
+- Text report is now sorted by severity (critical first) and preserves the full resource identifier (UTF-8-safe truncation)
+- AWS service-linked and IAM Identity Center roles are no longer flagged as unused with un-actionable "delete" advice — they are suppressed by default, down-ranked to low severity, and given lifecycle-appropriate guidance
+- Unused-role findings no longer report a fabricated age when a role's creation date is unavailable
+
+### Added
+
+- `include_service_linked_roles` config key to opt AWS-owned roles back into unused-role scanning
+- Restraint-first IAM action assessment: case-insensitive `*`/`?` action matching and sensitive-action detection, with explicit indeterminate handling for `NotAction` complements, `NotResource`, and policy variables
+
 ## [0.2.3] - 2026-07-19
 
 ### Fixed
