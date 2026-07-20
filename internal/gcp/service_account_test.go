@@ -95,6 +95,7 @@ func TestServiceAccountScanner_RecentKey(t *testing.T) {
 }
 
 func TestServiceAccountScanner_DisabledSA(t *testing.T) {
+	// WO-69@v2: disabled state alone is not independent staleness evidence.
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{
 			{Name: "projects/test/serviceAccounts/sa1", Email: "sa1@test.iam.gserviceaccount.com", UniqueId: "123", Disabled: true},
@@ -110,19 +111,13 @@ func TestServiceAccountScanner_DisabledSA(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	if len(result.Findings) != 1 {
-		t.Fatalf("expected 1 finding (disabled SA), got %d", len(result.Findings))
-	}
-	f := result.Findings[0]
-	if f.ID != iam.FindingStaleSA {
-		t.Fatalf("expected STALE_SA, got %s", f.ID)
-	}
-	if f.Severity != iam.SeverityHigh {
-		t.Fatalf("expected high severity, got %s", f.Severity)
+	if len(result.Findings) != 0 {
+		t.Fatalf("expected no finding for disabled state alone, got %#v", result.Findings)
 	}
 }
 
 func TestServiceAccountScanner_DisabledWithStaleKey(t *testing.T) {
+	// WO-69@v2: disabled accounts remain in key scanning and retain stale-key evidence.
 	staleTime := time.Now().AddDate(0, 0, -100).Format(time.RFC3339)
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{
@@ -141,9 +136,11 @@ func TestServiceAccountScanner_DisabledWithStaleKey(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	// Should have both STALE_SA and STALE_SA_KEY
-	if len(result.Findings) != 2 {
-		t.Fatalf("expected 2 findings (disabled SA + stale key), got %d", len(result.Findings))
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected exactly one stale-key finding, got %#v", result.Findings)
+	}
+	if result.Findings[0].ID != iam.FindingStaleSAKey {
+		t.Fatalf("expected STALE_SA_KEY, got %s", result.Findings[0].ID)
 	}
 }
 
