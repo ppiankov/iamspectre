@@ -250,11 +250,13 @@ func TestJSONReporter(t *testing.T) {
 	}
 }
 
-// WO-74@v2: pin canonical locations, stable IDs, severity fidelity, and summary field names.
+// WO-74@v3: pin canonical locations, stable IDs, supported severity, and summary field names.
 func TestSpectreHubReporter(t *testing.T) {
 	var buf bytes.Buffer
 	r := &SpectreHubReporter{Writer: &buf}
 	data := testData()
+	data.Findings[0].Severity = iam.SeverityHigh
+	data.Summary.BySeverity = map[string]int{"high": 1, "medium": 1}
 
 	if err := r.Generate(data); err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -274,11 +276,35 @@ func TestSpectreHubReporter(t *testing.T) {
 	if len(envelope.Findings) != 2 || envelope.Findings[0].Location == envelope.Findings[1].Location || envelope.Findings[0].Location == "" {
 		t.Fatalf("finding locations = %#v", envelope.Findings)
 	}
-	if envelope.Findings[0].ID != iam.FindingNoMFA || envelope.Findings[0].Severity != iam.SeverityCritical {
+	if envelope.Findings[0].ID != iam.FindingNoMFA || envelope.Findings[0].Severity != iam.SeverityHigh {
 		t.Fatalf("finding identity/severity = %#v", envelope.Findings[0])
 	}
-	if envelope.Summary.Total != 2 || envelope.Summary.Medium != 1 {
+	if envelope.Summary.Total != 2 || envelope.Summary.High != 1 || envelope.Summary.Medium != 1 {
 		t.Fatalf("summary = %#v", envelope.Summary)
+	}
+}
+
+// WO-74@v3: unsupported consumer capabilities fail before emitting partial or invalid JSON.
+func TestSpectreHubReporterRejectsUnsupportedData(t *testing.T) {
+	tests := []struct {
+		name string
+		data Data
+		want string
+	}{
+		{name: "critical", data: testData(), want: "does not support critical severity"},
+		{name: "coverage", data: Data{Coverage: CoverageManifest{Gaps: []CoverageGap{{Capability: "azure_activity"}}}}, want: "does not support coverage_manifest"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := (&SpectreHubReporter{Writer: &buf}).Generate(tt.data)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if buf.Len() != 0 {
+				t.Fatalf("partial output = %q", buf.String())
+			}
+		})
 	}
 }
 
@@ -559,7 +585,7 @@ func TestSARIFReporter_InvalidPartialAssessment(t *testing.T) {
 	}
 }
 
-// WO-70@v3: every reporter preserves coverage as run evidence rather than an actionable finding.
+// WO-70@v4: native reporters preserve coverage; SpectreHub fails closed until its schema supports it.
 func TestReporters_CoverageManifestPlane(t *testing.T) {
 	data := testData()
 	data.Findings = nil
@@ -581,11 +607,11 @@ func TestReporters_CoverageManifestPlane(t *testing.T) {
 		t.Fatalf("JSON mixed coverage with findings: %s", jsonBuffer.String())
 	}
 	var hubBuffer bytes.Buffer
-	if err := (&SpectreHubReporter{Writer: &hubBuffer}).Generate(data); err != nil {
-		t.Fatal(err)
+	if err := (&SpectreHubReporter{Writer: &hubBuffer}).Generate(data); err == nil || !strings.Contains(err.Error(), "does not support coverage_manifest") {
+		t.Fatalf("SpectreHub coverage error = %v", err)
 	}
-	if !strings.Contains(hubBuffer.String(), `"coverage_manifest"`) || strings.Contains(hubBuffer.String(), `"location": ""`) {
-		t.Fatalf("SpectreHub mixed coverage with findings: %s", hubBuffer.String())
+	if hubBuffer.Len() != 0 {
+		t.Fatalf("SpectreHub emitted partial coverage output: %s", hubBuffer.String())
 	}
 
 	var textBuffer bytes.Buffer

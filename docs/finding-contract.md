@@ -27,6 +27,8 @@ Severity is consumed independently from the finding ID. It controls prioritizati
 
 The SpectreHub wire format must preserve all IAMSpectre severity values, including `critical`. A consumer must not silently downgrade an unrecognized severity. Producer and consumer schema changes are required before introducing another severity value.
 
+The current `spectre/v1` consumer does not yet accept `critical` or a run-level coverage manifest. IAMSpectre therefore fails closed before writing SpectreHub output when either is present. Coordinated producer and consumer support is required before those values can cross this transport.
+
 ## GitHub Action behavior
 
 The `iamspectre-action` wrapper does not inspect finding IDs or individual finding severities. It passes the configured `severity-min` value to the IAMSpectre CLI, exposes the report path and CLI exit code, and converts finding and error exit codes into GitHub Actions annotations.
