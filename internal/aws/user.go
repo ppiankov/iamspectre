@@ -27,7 +27,7 @@ func (s *UserScanner) Type() iam.ResourceType {
 }
 
 // Scan examines credential report entries for user-level findings.
-// WO-55@v3: aggregate only applicable and determinate user-activity evidence.
+// WO-55@v4: evaluate console-credential staleness and whole-user inactivity on separate axes.
 func (s *UserScanner) Scan(_ context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
 	result := &iam.ScanResult{PrincipalsScanned: len(s.entries)}
 	scanNow := time.Now().UTC()
@@ -42,29 +42,10 @@ func (s *UserScanner) Scan(_ context.Context, cfg iam.ScanConfig) (*iam.ScanResu
 		}
 		threshold := iam.StaleThreshold(evidenceNow, cfg.StaleDays) // WO-24@v2: use the shared calendar cutoff.
 
-		// WO-55@v3: use the latest applicable console or active-key evidence for user activity.
-		lastActivity, passwordBlocks, passwordUnavailable, keyIndeterminate := latestUserActivity(entry)
-		if passwordUnavailable {
-			result.Errors = append(result.Errors, fmt.Sprintf("evaluate stale user %s: console last-used evidence is unavailable", entry.User))
-		}
-		if lastActivity != nil && lastActivity.Before(threshold) && !passwordBlocks && !keyIndeterminate {
-			daysSince := int(evidenceNow.Sub(*lastActivity).Hours() / 24)
-			metadata := map[string]any{
-				"last_activity":       lastActivity.Format(time.RFC3339),
-				"days_since_activity": daysSince,
-			}
-			addCredentialReportGeneratedAt(metadata, entry)
-			result.Findings = append(result.Findings, iam.Finding{
-				ID:             iam.FindingStaleUser,
-				Severity:       iam.SeverityHigh,
-				ResourceType:   iam.ResourceIAMUser,
-				ResourceID:     entry.ARN,
-				ResourceName:   entry.User,
-				Message:        fmt.Sprintf("No IAM user activity in %d days", daysSince),
-				Recommendation: staleUserRecommendation(entry),
-				Metadata:       metadata,
-			})
-		}
+		// WO-55@v4: console staleness alone; active keys must not clear a dormant console credential.
+		s.checkStaleConsole(entry, threshold, evidenceNow, result)
+		// WO-55@v4: whole-principal dormancy across every applicable credential channel.
+		s.checkInactiveUser(entry, threshold, evidenceNow, result)
 
 		// Check stale access key 1
 		if entry.AccessKey1Active {
@@ -99,8 +80,70 @@ func (s *UserScanner) Scan(_ context.Context, cfg iam.ScanConfig) (*iam.ScanResu
 	return result, nil
 }
 
-// WO-55@v3: inactive credential slots cannot mask stale applicable activity.
-func latestUserActivity(entry CredentialEntry) (*time.Time, bool, bool, bool) {
+// WO-55@v4: STALE_USER reports console-credential dormancy in isolation so active-key use
+// on the same principal can never mask a dormant-but-once-used console login. Never-used
+// or unknown-state passwords stay indeterminate (error or silent block), not a silent pass.
+func (s *UserScanner) checkStaleConsole(entry CredentialEntry, threshold, evidenceNow time.Time, result *iam.ScanResult) {
+	if !entry.PasswordEnabled {
+		return
+	}
+	if entry.PasswordLastUsed == nil {
+		// WO-55@v4: unknown console evidence is reportable uncertainty; no-recorded-use blocks silently.
+		if entry.PasswordUseState == PasswordUseUnknown {
+			result.Errors = append(result.Errors, fmt.Sprintf("evaluate stale user %s: console last-used evidence is unavailable", entry.User))
+		}
+		return
+	}
+	if !entry.PasswordLastUsed.Before(threshold) {
+		return
+	}
+	daysSince := int(evidenceNow.Sub(*entry.PasswordLastUsed).Hours() / 24)
+	metadata := map[string]any{
+		"last_console_activity":       entry.PasswordLastUsed.Format(time.RFC3339),
+		"days_since_console_activity": daysSince,
+	}
+	addCredentialReportGeneratedAt(metadata, entry)
+	result.Findings = append(result.Findings, iam.Finding{
+		ID:             iam.FindingStaleUser,
+		Severity:       iam.SeverityHigh,
+		ResourceType:   iam.ResourceIAMUser,
+		ResourceID:     entry.ARN,
+		ResourceName:   entry.User,
+		Message:        fmt.Sprintf("Console credential unused for %d days", daysSince),
+		Recommendation: "Review console access; disable the login profile or delete the user if console access is no longer needed",
+		Metadata:       metadata,
+	})
+}
+
+// WO-55@v4: INACTIVE_IAM_USER reports true whole-principal dormancy: no console activity AND no
+// active-key activity within the threshold. Activity on any applicable credential clears it.
+func (s *UserScanner) checkInactiveUser(entry CredentialEntry, threshold, evidenceNow time.Time, result *iam.ScanResult) {
+	lastActivity, passwordBlocks, keyIndeterminate := latestUserActivity(entry)
+	if lastActivity == nil || !lastActivity.Before(threshold) || passwordBlocks || keyIndeterminate {
+		return
+	}
+	daysSince := int(evidenceNow.Sub(*lastActivity).Hours() / 24)
+	metadata := map[string]any{
+		"last_activity":       lastActivity.Format(time.RFC3339),
+		"days_since_activity": daysSince,
+	}
+	addCredentialReportGeneratedAt(metadata, entry)
+	result.Findings = append(result.Findings, iam.Finding{
+		ID:             iam.FindingInactiveIAMUser,
+		Severity:       iam.SeverityHigh,
+		ResourceType:   iam.ResourceIAMUser,
+		ResourceID:     entry.ARN,
+		ResourceName:   entry.User,
+		Message:        fmt.Sprintf("No IAM user activity in %d days", daysSince),
+		Recommendation: inactiveUserRecommendation(entry),
+		Metadata:       metadata,
+	})
+}
+
+// WO-55@v4: pick the newest applicable console-or-active-key activity; inactive credential slots
+// cannot mask dormancy. passwordBlocks suppresses on never-used console evidence that would
+// otherwise be silently ignored; keyIndeterminate suppresses when an active key's use is unknown.
+func latestUserActivity(entry CredentialEntry) (*time.Time, bool, bool) {
 	var latest *time.Time
 	consider := func(active bool, candidate *time.Time) {
 		if active && candidate != nil && (latest == nil || candidate.After(*latest)) {
@@ -113,14 +156,13 @@ func latestUserActivity(entry CredentialEntry) (*time.Time, bool, bool, bool) {
 	consider(entry.AccessKey2Active, entry.AccessKey2LastUsedDate)
 	passwordBlocks := entry.PasswordEnabled && entry.PasswordLastUsed == nil &&
 		(entry.PasswordUseState == PasswordUseUnknown || entry.PasswordUseState == PasswordUseNoRecordedUse)
-	passwordUnavailable := entry.PasswordEnabled && entry.PasswordLastUsed == nil && entry.PasswordUseState == PasswordUseUnknown
 	keyIndeterminate := entry.AccessKey1Active && entry.AccessKey1LastUsedDate == nil && entry.AccessKey1UseState == CredentialUseUnknown
 	keyIndeterminate = keyIndeterminate || entry.AccessKey2Active && entry.AccessKey2LastUsedDate == nil && entry.AccessKey2UseState == CredentialUseUnknown
-	return latest, passwordBlocks, passwordUnavailable, keyIndeterminate
+	return latest, passwordBlocks, keyIndeterminate
 }
 
-// WO-55@v3: stale guidance must match the credential channels that actually apply.
-func staleUserRecommendation(entry CredentialEntry) string {
+// WO-55@v4: inactivity guidance must match the credential channels that actually apply.
+func inactiveUserRecommendation(entry CredentialEntry) string {
 	if entry.PasswordEnabled {
 		return "Review console and credential activity; disable access or delete the user if no longer needed"
 	}

@@ -9,7 +9,7 @@ import (
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
 
-// WO-55@v3: base stale-user behavior follows aggregate applicable activity.
+// WO-55@v4: STALE_USER reports console-credential staleness by itself.
 func TestUserScanner_StaleUser(t *testing.T) {
 	staleDate := time.Now().UTC().AddDate(0, 0, -120)
 	entries := []CredentialEntry{
@@ -42,18 +42,109 @@ func TestUserScanner_StaleUser(t *testing.T) {
 	if found.ResourceName != "stale-admin" {
 		t.Fatalf("expected stale-admin, got %s", found.ResourceName)
 	}
-	if found.Metadata["last_activity"] != staleDate.Format(time.RFC3339) {
-		t.Fatalf("expected latest activity metadata, got %v", found.Metadata["last_activity"])
+	if found.Metadata["last_console_activity"] != staleDate.Format(time.RFC3339) {
+		t.Fatalf("expected console activity metadata, got %v", found.Metadata["last_console_activity"])
 	}
-	if _, ok := found.Metadata["days_since_activity"]; !ok {
-		t.Fatal("expected days_since_activity metadata")
+	if _, ok := found.Metadata["days_since_console_activity"]; !ok {
+		t.Fatal("expected days_since_console_activity metadata")
 	}
 	if !strings.Contains(strings.ToLower(found.Recommendation), "console") {
-		t.Fatalf("console-capable guidance omits console review: %q", found.Recommendation)
+		t.Fatalf("console guidance omits console review: %q", found.Recommendation)
 	}
 }
 
-// WO-55@v3: select the newest applicable activity without allowing inactive keys to mask staleness.
+// WO-55@v4: a dormant console password with an active key yields STALE_USER (console dormant)
+// and NOT INACTIVE_IAM_USER (keys active) — the console credential is no longer masked.
+func TestUserScanner_DormantConsoleActiveKey(t *testing.T) {
+	dormantConsole := time.Now().UTC().AddDate(0, 0, -120)
+	activeKey := time.Now().UTC().AddDate(0, 0, -1)
+	entries := []CredentialEntry{
+		{
+			User:                   "masked-console",
+			ARN:                    "arn:aws:iam::123456789012:user/masked-console",
+			PasswordEnabled:        true,
+			PasswordLastUsed:       &dormantConsole,
+			MFAActive:              true,
+			AccessKey1Active:       true,
+			AccessKey1LastUsedDate: &activeKey,
+			AccessKey1UseState:     CredentialUseUsed,
+		},
+	}
+	result, err := NewUserScanner(entries).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingStaleUser) == nil {
+		t.Fatal("expected STALE_USER for dormant console credential")
+	}
+	if findFinding(result.Findings, iam.FindingInactiveIAMUser) != nil {
+		t.Fatal("INACTIVE_IAM_USER must not fire while a key is active — user is not dormant")
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors, got %v", result.Errors)
+	}
+}
+
+// WO-55@v4: a fully dormant user (console and keys both stale) yields INACTIVE_IAM_USER.
+func TestUserScanner_FullyDormantUser(t *testing.T) {
+	stale := time.Now().UTC().AddDate(0, 0, -120)
+	entries := []CredentialEntry{
+		{
+			User:                   "fully-dormant",
+			ARN:                    "arn:aws:iam::123456789012:user/fully-dormant",
+			PasswordEnabled:        true,
+			PasswordLastUsed:       &stale,
+			MFAActive:              true,
+			AccessKey1Active:       true,
+			AccessKey1LastUsedDate: &stale,
+			AccessKey1UseState:     CredentialUseUsed,
+		},
+	}
+	result, err := NewUserScanner(entries).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	found := findFinding(result.Findings, iam.FindingInactiveIAMUser)
+	if found == nil {
+		t.Fatal("expected INACTIVE_IAM_USER for fully dormant user")
+	}
+	if found.Severity != iam.SeverityHigh {
+		t.Fatalf("expected high severity, got %s", found.Severity)
+	}
+	if found.Metadata["last_activity"] != stale.Format(time.RFC3339) {
+		t.Fatalf("expected last_activity metadata, got %v", found.Metadata["last_activity"])
+	}
+	// Console is also dormant, so STALE_USER fires too — both axes are independent.
+	if findFinding(result.Findings, iam.FindingStaleUser) == nil {
+		t.Fatal("expected STALE_USER for dormant console on a fully dormant user")
+	}
+}
+
+// WO-55@v4: an active-console user triggers neither console staleness nor whole-user inactivity.
+func TestUserScanner_ActiveConsoleUser(t *testing.T) {
+	recent := time.Now().UTC().AddDate(0, 0, -1)
+	entries := []CredentialEntry{
+		{
+			User:             "active-console",
+			ARN:              "arn:aws:iam::123456789012:user/active-console",
+			PasswordEnabled:  true,
+			PasswordLastUsed: &recent,
+			MFAActive:        true,
+		},
+	}
+	result, err := NewUserScanner(entries).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingStaleUser) != nil {
+		t.Fatal("STALE_USER must not fire for an active console credential")
+	}
+	if findFinding(result.Findings, iam.FindingInactiveIAMUser) != nil {
+		t.Fatal("INACTIVE_IAM_USER must not fire for an active user")
+	}
+}
+
+// WO-55@v4: select the newest applicable activity without allowing inactive keys to mask dormancy.
 func TestLatestUserActivity(t *testing.T) {
 	oldest := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	middle := oldest.Add(24 * time.Hour)
@@ -88,11 +179,16 @@ func TestLatestUserActivity(t *testing.T) {
 			want:                 &oldest,
 			wantKeyIndeterminate: true,
 		},
+		{
+			name:                      "never-used console blocks",
+			entry:                     CredentialEntry{PasswordEnabled: true, PasswordUseState: PasswordUseNoRecordedUse},
+			wantPasswordIndeterminate: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, passwordIndeterminate, _, keyIndeterminate := latestUserActivity(tt.entry)
+			got, passwordIndeterminate, keyIndeterminate := latestUserActivity(tt.entry)
 			if tt.want == nil && got != nil {
 				t.Fatalf("expected no activity, got %v", got)
 			}
@@ -106,15 +202,16 @@ func TestLatestUserActivity(t *testing.T) {
 	}
 }
 
-// WO-55@v3: active key use is user activity even when console evidence is stale or absent.
-func TestUserScanner_UsesLatestApplicableActivity(t *testing.T) {
+// WO-55@v4: whole-user dormancy is cleared by activity on any applicable credential; active
+// key use prevents INACTIVE_IAM_USER even when the console credential is itself dormant.
+func TestUserScanner_WholeUserInactivity(t *testing.T) {
 	recent := time.Now().UTC().AddDate(0, 0, -1)
 	stale := time.Now().UTC().AddDate(0, 0, -120)
 	tests := []struct {
-		name       string
-		entry      CredentialEntry
-		wantStale  bool
-		wantErrors int
+		name         string
+		entry        CredentialEntry
+		wantInactive bool
+		wantErrors   int
 	}{
 		{
 			name:  "stale console recent key one",
@@ -125,18 +222,18 @@ func TestUserScanner_UsesLatestApplicableActivity(t *testing.T) {
 			entry: CredentialEntry{User: "active-key-two", ARN: "arn:active-key-two", PasswordEnabled: true, PasswordLastUsed: &stale, MFAActive: true, AccessKey2Active: true, AccessKey2LastUsedDate: &recent},
 		},
 		{
-			name:      "fully stale",
-			entry:     CredentialEntry{User: "fully-stale", ARN: "arn:fully-stale", PasswordEnabled: true, PasswordLastUsed: &stale, MFAActive: true, AccessKey1Active: true, AccessKey1LastUsedDate: &stale},
-			wantStale: true,
+			name:         "fully stale",
+			entry:        CredentialEntry{User: "fully-stale", ARN: "arn:fully-stale", PasswordEnabled: true, PasswordLastUsed: &stale, MFAActive: true, AccessKey1Active: true, AccessKey1LastUsedDate: &stale},
+			wantInactive: true,
 		},
 		{
 			name:  "key only recent",
 			entry: CredentialEntry{User: "key-only", ARN: "arn:key-only", AccessKey1Active: true, AccessKey1LastUsedDate: &recent},
 		},
 		{
-			name:      "inactive recent key",
-			entry:     CredentialEntry{User: "inactive-key", ARN: "arn:inactive-key", PasswordEnabled: true, PasswordLastUsed: &stale, MFAActive: true, AccessKey1LastUsedDate: &recent},
-			wantStale: true,
+			name:         "inactive recent key",
+			entry:        CredentialEntry{User: "inactive-key", ARN: "arn:inactive-key", PasswordEnabled: true, PasswordLastUsed: &stale, MFAActive: true, AccessKey1LastUsedDate: &recent},
+			wantInactive: true,
 		},
 		{
 			name:       "no applicable timestamps",
@@ -166,9 +263,9 @@ func TestUserScanner_UsesLatestApplicableActivity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("scan: %v", err)
 			}
-			gotStale := findFinding(result.Findings, iam.FindingStaleUser) != nil
-			if gotStale != tt.wantStale {
-				t.Fatalf("expected stale=%v, got %v", tt.wantStale, gotStale)
+			gotInactive := findFinding(result.Findings, iam.FindingInactiveIAMUser) != nil
+			if gotInactive != tt.wantInactive {
+				t.Fatalf("expected inactive=%v, got %v", tt.wantInactive, gotInactive)
 			}
 			if len(result.Errors) != tt.wantErrors {
 				t.Fatalf("expected %d errors, got %v", tt.wantErrors, result.Errors)
@@ -181,6 +278,7 @@ func TestUserScanner_UsesLatestApplicableActivity(t *testing.T) {
 }
 
 // WO-63: indeterminate console evidence blocks stale-user conclusions unless recent activity is known.
+// WO-55@v4: the console axis owns this block; STALE_USER stays suppressed on unknown console evidence.
 func TestUserScanner_PasswordEvidenceAggregation(t *testing.T) {
 	stale := time.Now().UTC().AddDate(0, 0, -120)
 	recent := time.Now().UTC().AddDate(0, 0, -1)
@@ -223,17 +321,21 @@ func TestUserScanner_PasswordEvidenceAggregation(t *testing.T) {
 	}
 }
 
-// WO-55@v3: API-only staleness guidance must not imply console access exists.
-func TestUserScanner_APIOnlyStaleGuidance(t *testing.T) {
+// WO-55@v4: an API-only dormant user is INACTIVE_IAM_USER (not STALE_USER, no console credential),
+// and its guidance must not imply console access exists.
+func TestUserScanner_APIOnlyInactiveGuidance(t *testing.T) {
 	stale := time.Now().UTC().AddDate(0, 0, -120)
 	entry := CredentialEntry{User: "api-only-stale", ARN: "arn:api-only-stale", AccessKey1Active: true, AccessKey1LastUsedDate: &stale}
 	result, err := NewUserScanner([]CredentialEntry{entry}).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	found := findFinding(result.Findings, iam.FindingStaleUser)
+	if findFinding(result.Findings, iam.FindingStaleUser) != nil {
+		t.Fatal("STALE_USER must not fire for an API-only user with no console credential")
+	}
+	found := findFinding(result.Findings, iam.FindingInactiveIAMUser)
 	if found == nil {
-		t.Fatal("expected STALE_USER")
+		t.Fatal("expected INACTIVE_IAM_USER")
 	}
 	if strings.Contains(strings.ToLower(found.Recommendation), "console") {
 		t.Fatalf("API-only guidance mentions console: %q", found.Recommendation)
@@ -594,17 +696,22 @@ func TestUserScanner_UsesCredentialReportTimeForStaleness(t *testing.T) {
 			t.Fatalf("cached evidence crossed cutoff at scan time: %+v", finding)
 		}
 		if finding.ResourceName == "stale-at-report-time" {
+			// WO-55@v4: each axis reports its own age metadata key.
 			key := "days_since_activity"
-			if finding.ID == iam.FindingStaleAccessKey {
+			switch finding.ID {
+			case iam.FindingStaleAccessKey:
 				key = "days_since_use"
+			case iam.FindingStaleUser:
+				key = "days_since_console_activity"
 			}
 			if finding.Metadata[key] != 100 {
 				t.Fatalf("%s uses wrong evidence age: %v", finding.ID, finding.Metadata)
 			}
 		}
 	}
-	if len(result.Findings) != 2 {
-		t.Fatalf("expected stale user and key only, got %+v", result.Findings)
+	// WO-55@v4: the dormant user surfaces console staleness, whole-user inactivity, and the stale key.
+	if len(result.Findings) != 3 {
+		t.Fatalf("expected stale user, inactive user, and stale key, got %+v", result.Findings)
 	}
 }
 
