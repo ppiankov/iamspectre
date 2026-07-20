@@ -30,8 +30,8 @@ func (s *AzureScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 	// Pre-fetch shared data (like AWS credential report).
 	users, usersErr := s.client.Graph.ListUsers(ctx)
 	sps, spsErr := s.client.Graph.ListServicePrincipals(ctx)
-	spActivities, spActivityErr := s.client.Graph.ListServicePrincipalSignInActivities(ctx) // WO-68@v2: fetch the separate beta report.
-	sps, spCoverage := joinServicePrincipalActivity(sps, spActivities, spActivityErr, s.client.TenantID, s.scanCfg.StaleDays)
+	spActivities, spActivityErr := s.client.Graph.ListServicePrincipalSignInActivities(ctx) // WO-68@v3: fetch the separate beta report.
+	sps, spCoverage := joinServicePrincipalActivity(sps, spActivities, spActivityErr, s.client.TenantID, s.scanCfg)
 
 	// Build principal activity map for role scanner.
 	principalActivity := buildPrincipalActivityMap(users, sps, s.scanCfg.StaleDays)
@@ -47,9 +47,12 @@ func (s *AzureScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 	return iam.RunScanners(ctx, scanners, s.scanCfg)
 }
 
-// WO-68@v2: join report rows by appId and report unknown evidence once per tenant.
-func joinServicePrincipalActivity(servicePrincipals []ServicePrincipal, activities []ServicePrincipalSignInActivity, activityErr error, tenantID string, staleDays int) ([]ServicePrincipal, *iam.CoverageGapObservation) {
+// WO-68@v3: join authoritative report rows by appId and report unknown evidence once per tenant.
+func joinServicePrincipalActivity(servicePrincipals []ServicePrincipal, activities []ServicePrincipalSignInActivity, activityErr error, tenantID string, scanCfg iam.ScanConfig) ([]ServicePrincipal, *iam.CoverageGapObservation) {
 	joined := append([]ServicePrincipal(nil), servicePrincipals...)
+	for index := range joined {
+		joined[index].SignInActivity = nil
+	}
 	byAppID := make(map[string]*SignInActivity, len(activities))
 	if activityErr == nil {
 		for _, activity := range activities {
@@ -58,13 +61,21 @@ func joinServicePrincipalActivity(servicePrincipals []ServicePrincipal, activiti
 			}
 		}
 	}
-	missing := 0
+	missing, evaluable, eligible := 0, 0, 0
 	for index := range joined {
+		excluded := iam.IsExcluded(scanCfg, joined[index].ID, joined[index].DisplayName) // WO-75@v1: coverage counts only in-scope principals.
 		if activity := byAppID[joined[index].AppID]; activity != nil {
 			joined[index].SignInActivity = activity
+			if !excluded {
+				evaluable++
+				eligible++
+			}
 			continue
 		}
-		missing++
+		if !excluded {
+			missing++
+			eligible++
+		}
 	}
 	if missing == 0 {
 		return joined, nil
@@ -76,8 +87,8 @@ func joinServicePrincipalActivity(servicePrincipals []ServicePrincipal, activiti
 	return joined, &iam.CoverageGapObservation{
 		Capability: "azure_service_principal_sign_in_activity",
 		Cause:      cause, Scope: "azure-tenant:" + tenantID, FindingID: iam.FindingStaleSP,
-		AffectedCount: missing, EvaluableCount: len(joined) - missing, TotalCount: len(joined),
-		ObservationWindow: fmt.Sprintf("stale-threshold:%dd", staleDays), FeatureStage: "beta",
+		AffectedCount: missing, EvaluableCount: evaluable, TotalCount: eligible,
+		ObservationWindow: fmt.Sprintf("stale-threshold:%dd", scanCfg.StaleDays), FeatureStage: "beta",
 		MaxConsequence: iam.SeverityHigh,
 	}
 }

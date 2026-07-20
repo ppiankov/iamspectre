@@ -12,15 +12,15 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 )
 
-// WO-68@v2: staticTokenCredential is a non-secret test credential.
+// WO-68@v3: staticTokenCredential is a non-secret test credential.
 type staticTokenCredential struct{}
 
-// WO-68@v2: avoid external credentials in the beta report fetch-path test.
+// WO-68@v3: avoid external credentials in the beta report fetch-path test.
 func (staticTokenCredential) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {
 	return azcore.AccessToken{Token: "test", ExpiresOn: time.Now().Add(time.Hour)}, nil
 }
 
-// WO-68@v2: mockGraph carries service-principal activity separately from principal objects.
+// WO-68@v3: mockGraph carries service-principal activity separately from principal objects.
 type mockGraph struct {
 	users          []User
 	usersErr       error
@@ -50,7 +50,7 @@ func (m *mockGraph) ListServicePrincipals(_ context.Context) ([]ServicePrincipal
 	return m.sps, m.spsErr
 }
 
-// WO-68@v2: expose report evidence independently from service-principal objects.
+// WO-68@v3: expose report evidence independently from service-principal objects.
 func (m *mockGraph) ListServicePrincipalSignInActivities(_ context.Context) ([]ServicePrincipalSignInActivity, error) {
 	return m.spActivities, m.spActivityErr
 }
@@ -96,7 +96,7 @@ func TestNewClientWith_EmptyTenant(t *testing.T) {
 	}
 }
 
-// WO-68@v2: pin the real beta report route, pagination, and official appId/lastSignInActivity shape.
+// WO-68@v3: pin the real beta report route, pagination, and official appId/lastSignInActivity shape.
 func TestGraphClient_ListServicePrincipalSignInActivities(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -132,7 +132,7 @@ func TestGraphClient_ListServicePrincipalSignInActivities(t *testing.T) {
 	}
 }
 
-// WO-68@v2: keep pagination links bound to the deterministic test server.
+// WO-68@v3: keep pagination links bound to the deterministic test server.
 func serverURL(request *http.Request) string {
 	return "http://" + request.Host
 }

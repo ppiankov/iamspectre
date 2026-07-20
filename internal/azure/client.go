@@ -17,13 +17,13 @@ import (
 
 const graphBaseURL = "https://graph.microsoft.com/v1.0"
 
-// WO-68@v2: service-principal activity is available only from the Microsoft Graph beta reports surface.
+// WO-68@v3: service-principal activity is available only from the Microsoft Graph beta reports surface.
 const graphBetaBaseURL = "https://graph.microsoft.com/beta"
 
 // graphScope is the OAuth2 scope for Microsoft Graph API.
 const graphScope = "https://graph.microsoft.com/.default"
 
-// WO-68@v2: GraphAPI includes the separate service-principal activity evidence source.
+// WO-68@v3: GraphAPI includes the separate service-principal activity evidence source.
 type GraphAPI interface {
 	ListUsers(ctx context.Context) ([]User, error)
 	ListApplications(ctx context.Context) ([]Application, error)
@@ -75,10 +75,10 @@ func NewClientWith(tenantID string, graphAPI GraphAPI) *Client {
 type graphClient struct {
 	cred        azcore.TokenCredential
 	client      *http.Client
-	betaBaseURL string // WO-68@v2: injectable only for deterministic fetch-path tests.
+	betaBaseURL string // WO-68@v3: injectable only for deterministic fetch-path tests.
 }
 
-// WO-68@v2: initialize the production beta endpoint while keeping tests deterministic.
+// WO-68@v3: initialize the production beta endpoint while keeping tests deterministic.
 func newGraphClient(cred azcore.TokenCredential) *graphClient {
 	return &graphClient{
 		cred:        cred,
@@ -117,7 +117,7 @@ func (g *graphClient) ListServicePrincipals(ctx context.Context) ([]ServicePrinc
 	return all, nil
 }
 
-// WO-68@v2: fetch the authoritative activity report instead of guessing a /servicePrincipals property.
+// WO-68@v3: fetch the authoritative activity report instead of guessing a /servicePrincipals property.
 func (g *graphClient) ListServicePrincipalSignInActivities(ctx context.Context) ([]ServicePrincipalSignInActivity, error) {
 	url := g.betaBaseURL + "/reports/servicePrincipalSignInActivities?$top=999"
 	var all []ServicePrincipalSignInActivity

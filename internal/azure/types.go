@@ -55,7 +55,7 @@ type ServicePrincipal struct {
 	AppRoleAssignments []AppRoleAssignment `json:"appRoleAssignments"`
 }
 
-// WO-68@v2: ServicePrincipalSignInActivity models the beta report keyed by application ID.
+// WO-68@v3: ServicePrincipalSignInActivity models the beta report keyed by application ID.
 type ServicePrincipalSignInActivity struct {
 	ID                 string          `json:"id"`
 	AppID              string          `json:"appId"`

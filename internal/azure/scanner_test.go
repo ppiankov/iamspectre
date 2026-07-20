@@ -34,10 +34,11 @@ func TestAzureScanner_ScanAll_Empty(t *testing.T) {
 	}
 }
 
-// WO-68@v2: unavailable beta evidence remains visible without blocking other Azure checks.
+// WO-68@v3: unavailable beta evidence clears legacy activity without blocking other Azure checks.
 func TestAzureScanner_ServicePrincipalActivityUnavailable(t *testing.T) {
+	legacySignIn := time.Now().AddDate(0, 0, -200)
 	mock := &mockGraph{
-		sps:           []ServicePrincipal{{ID: "sp-1", AppID: "app-1", DisplayName: "SP"}},
+		sps:           []ServicePrincipal{{ID: "sp-1", AppID: "app-1", DisplayName: "SP", SignInActivity: &SignInActivity{LastSignInDateTime: &legacySignIn}}},
 		spActivityErr: fmt.Errorf("license unavailable"),
 		secDefaults:   &SecurityDefaultsPolicy{IsEnabled: true},
 	}
@@ -56,7 +57,7 @@ func TestAzureScanner_ServicePrincipalActivityUnavailable(t *testing.T) {
 	}
 }
 
-// WO-68@v2: report rows join by appId and drive the production STALE_SP path.
+// WO-68@v3: report rows join by appId and drive the production STALE_SP path.
 func TestAzureScanner_ServicePrincipalActivityJoin(t *testing.T) {
 	lastSignIn := time.Now().AddDate(0, 0, -100)
 	mock := &mockGraph{
@@ -97,7 +98,7 @@ func TestAzureScanner_ScanAll_SPFetchError(t *testing.T) {
 	testutil.AssertNonFatalScannerErrors(t, scanner.ScanAll, 1, "access denied")
 }
 
-// WO-68@v2, WO-73@v1: joined activity drives both SP and role decisions through orchestration.
+// WO-68@v3, WO-73@v1: joined activity drives both SP and role decisions through orchestration.
 func TestAzureScanner_ScanAll_Integration(t *testing.T) {
 	// WO-73@v1: a known-stale principal keeps the integration assertion evidence-backed.
 	lastSignIn := time.Now().AddDate(0, 0, -100)
@@ -207,5 +208,43 @@ func TestBuildPrincipalActivityMap(t *testing.T) {
 	}
 	if activity["active-sp"] != PrincipalActivityRecent {
 		t.Fatalf("active-sp = %q", activity["active-sp"])
+	}
+}
+
+// WO-68@v3: missing authoritative rows erase stale compatibility data before role decisions.
+func TestJoinServicePrincipalActivityClearsEmbeddedEvidence(t *testing.T) {
+	legacySignIn := time.Now().AddDate(0, 0, -200)
+	joined, coverage := joinServicePrincipalActivity(
+		[]ServicePrincipal{{ID: "sp-1", AppID: "app-1", DisplayName: "SP", SignInActivity: &SignInActivity{LastSignInDateTime: &legacySignIn}}},
+		nil, nil, "tenant-a", iam.ScanConfig{StaleDays: 90},
+	)
+	if joined[0].SignInActivity != nil || buildPrincipalActivityMap(nil, joined, 90)["sp-1"] != PrincipalActivityUnknown {
+		t.Fatalf("joined principals retained non-authoritative evidence: %#v", joined)
+	}
+	if coverage == nil || coverage.Cause != "missing_report_rows" || coverage.AffectedCount != 1 {
+		t.Fatalf("coverage = %#v", coverage)
+	}
+}
+
+// WO-75@v1: excluded principals do not inflate missing-evidence opportunity counts.
+func TestJoinServicePrincipalActivityExcludesCoverageOpportunities(t *testing.T) {
+	recent := time.Now().AddDate(0, 0, -10)
+	principals := []ServicePrincipal{
+		{ID: "excluded-id", AppID: "excluded-app", DisplayName: "Excluded"},
+		{ID: "eligible-id", AppID: "eligible-app", DisplayName: "Eligible"},
+	}
+	activities := []ServicePrincipalSignInActivity{{AppID: "excluded-app", LastSignInActivity: &SignInActivity{LastSignInDateTime: &recent}}}
+	_, coverage := joinServicePrincipalActivity(principals, activities, nil, "tenant-a", iam.ScanConfig{
+		StaleDays: 90, Exclude: iam.ExcludeConfig{ResourceIDs: map[string]bool{"excluded-id": true}},
+	})
+	if coverage == nil || coverage.AffectedCount != 1 || coverage.EvaluableCount != 0 || coverage.TotalCount != 1 {
+		t.Fatalf("coverage = %#v", coverage)
+	}
+
+	_, coverage = joinServicePrincipalActivity(principals[:1], nil, nil, "tenant-a", iam.ScanConfig{
+		StaleDays: 90, Exclude: iam.ExcludeConfig{Principals: map[string]bool{"Excluded": true}},
+	})
+	if coverage != nil {
+		t.Fatalf("all-excluded coverage = %#v", coverage)
 	}
 }
