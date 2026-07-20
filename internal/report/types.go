@@ -23,6 +23,36 @@ type Data struct {
 	Findings  []iam.Finding    `json:"findings"`
 	Summary   analyzer.Summary `json:"summary"`
 	Errors    []string         `json:"errors,omitempty"`
+	Coverage  CoverageManifest `json:"coverage_manifest,omitempty"` // WO-70@v3: surface unevaluable checks outside the finding plane.
+}
+
+// WO-70@v3: CoverageManifest summarizes missing evidence without inventing alerts.
+type CoverageManifest struct {
+	Gaps                      []CoverageGap `json:"gaps,omitempty"`
+	EvaluableOpportunities    int           `json:"evaluable_opportunities"`
+	TotalOpportunities        int           `json:"total_opportunities"`
+	UniqueMissingCapabilities int           `json:"unique_missing_capabilities"`
+	OldestEvidence            *time.Time    `json:"oldest_evidence,omitempty"`
+}
+
+// WO-70@v3: CoverageGap is one deterministically merged causal gap and scope.
+type CoverageGap struct {
+	Capability        string                 `json:"capability"`
+	Cause             string                 `json:"cause"`
+	Scope             string                 `json:"scope"`
+	AffectedFindings  []AffectedFindingClass `json:"affected_findings"`
+	EvaluableCount    int                    `json:"evaluable_count"`
+	TotalCount        int                    `json:"total_count"`
+	OldestEvidence    *time.Time             `json:"oldest_evidence,omitempty"`
+	ObservationWindow string                 `json:"observation_window,omitempty"`
+	FeatureStage      string                 `json:"feature_stage,omitempty"`
+	MaxConsequence    iam.Severity           `json:"max_consequence"`
+}
+
+// WO-70@v3: AffectedFindingClass retains the unresolved class count explicitly.
+type AffectedFindingClass struct {
+	FindingID iam.FindingID `json:"finding_id"`
+	Count     int           `json:"count"`
 }
 
 // Target identifies the cloud account being audited.

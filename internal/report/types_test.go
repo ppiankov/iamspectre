@@ -541,3 +541,46 @@ func TestSARIFReporter_InvalidPartialAssessment(t *testing.T) {
 		t.Fatal("invalid partial assessment metadata was omitted")
 	}
 }
+
+// WO-70@v3: every reporter preserves coverage as run evidence rather than an actionable finding.
+func TestReporters_CoverageManifestPlane(t *testing.T) {
+	data := testData()
+	data.Findings = nil
+	data.Summary.TotalFindings = 0
+	data.Coverage = CoverageManifest{
+		Gaps: []CoverageGap{{
+			Capability: "azure_activity", Cause: "report unavailable", Scope: "tenant:a",
+			AffectedFindings: []AffectedFindingClass{{FindingID: iam.FindingStaleSP, Count: 2}},
+			TotalCount:       2, FeatureStage: "beta", MaxConsequence: iam.SeverityHigh,
+		}},
+		TotalOpportunities: 2, UniqueMissingCapabilities: 1,
+	}
+
+	var jsonBuffer bytes.Buffer
+	if err := (&JSONReporter{Writer: &jsonBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jsonBuffer.String(), `"coverage_manifest"`) || strings.Contains(jsonBuffer.String(), `"id":"STALE_SP"`) {
+		t.Fatalf("JSON mixed coverage with findings: %s", jsonBuffer.String())
+	}
+
+	var textBuffer bytes.Buffer
+	if err := (&TextReporter{Writer: &textBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textBuffer.String(), "Coverage gaps:") || !strings.Contains(textBuffer.String(), "azure_activity") {
+		t.Fatalf("text missing coverage plane: %s", textBuffer.String())
+	}
+
+	var sarifBuffer bytes.Buffer
+	if err := (&SARIFReporter{Writer: &sarifBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	var sarif sarifReport
+	if err := json.Unmarshal(sarifBuffer.Bytes(), &sarif); err != nil {
+		t.Fatal(err)
+	}
+	if len(sarif.Runs[0].Results) != 0 || sarif.Runs[0].Properties["coverage_manifest"] == nil {
+		t.Fatalf("SARIF coverage plane = %#v", sarif.Runs[0])
+	}
+}

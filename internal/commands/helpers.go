@@ -174,6 +174,7 @@ func analyzeAndReport(result *iam.ScanResult, opts postScanOptions) (returnErr e
 		Findings: analysis.Findings,
 		Summary:  analysis.Summary,
 		Errors:   analysis.Errors,
+		Coverage: report.BuildCoverageManifest(result.CoverageGaps), // WO-70@v3: coverage bypasses severity filtering.
 	}
 	reporter, err := selectReporter(opts.format, w)
 	if err != nil {

@@ -39,6 +39,7 @@ func TestRunScannersAggregatesAndContinues(t *testing.T) {
 	scanners := []Scanner{
 		runnerScanner{typeID: ResourceIAMUser, result: &ScanResult{
 			Findings: []Finding{{ID: FindingStaleUser}}, Errors: []string{"nested"}, PrincipalsScanned: 2,
+			CoverageGaps: []CoverageGapObservation{{Capability: "activity", Scope: "account:a", FindingID: FindingStaleUser}},
 		}, scan: func(gotCtx context.Context, gotCfg ScanConfig) {
 			forwarded = gotCtx.Value(key) == "value" && gotCfg.StaleDays == cfg.StaleDays
 		}},
@@ -49,7 +50,7 @@ func TestRunScannersAggregatesAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunScanners: %v", err)
 	}
-	if !forwarded || len(result.Findings) != 1 || result.PrincipalsScanned != 2 {
+	if !forwarded || len(result.Findings) != 1 || len(result.CoverageGaps) != 1 || result.PrincipalsScanned != 2 {
 		t.Fatalf("unexpected aggregate: %#v forwarded=%v", result, forwarded)
 	}
 	joined := strings.Join(result.Errors, "|")

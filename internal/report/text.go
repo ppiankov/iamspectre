@@ -50,6 +50,7 @@ func (r *TextReporter) Generate(data Data) error {
 
 	if len(data.Findings) == 0 {
 		w.println("No findings.")
+		printTextCoverage(w, data.Coverage)
 		printTextSummary(w, data)
 		return w.err
 	}
@@ -83,8 +84,27 @@ func (r *TextReporter) Generate(data Data) error {
 		return err
 	}
 
+	printTextCoverage(w, data.Coverage)
 	printTextSummary(w, data)
 	return w.err
+}
+
+// WO-70@v3: render coverage gaps as a second plane, never as finding rows.
+func printTextCoverage(w *errWriter, manifest CoverageManifest) {
+	if len(manifest.Gaps) == 0 {
+		return
+	}
+	w.println("")
+	w.println("Coverage gaps:")
+	for _, gap := range manifest.Gaps {
+		classes := make([]string, 0, len(gap.AffectedFindings))
+		for _, affected := range gap.AffectedFindings {
+			classes = append(classes, fmt.Sprintf("%s=%d", affected.FindingID, affected.Count))
+		}
+		w.printf("  - %s [%s]: %s; affected=%s; evaluable=%d/%d; max=%s\n",
+			gap.Capability, gap.Scope, gap.Cause, strings.Join(classes, ","),
+			gap.EvaluableCount, gap.TotalCount, gap.MaxConsequence)
+	}
 }
 
 // WO-42@v2: keep summary output deterministic alongside the finding table.

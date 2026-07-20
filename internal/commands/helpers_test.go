@@ -210,6 +210,11 @@ func TestAnalyzeAndReportJSON(t *testing.T) {
 			{ID: iam.FindingUnusedRole, Severity: iam.SeverityLow, ResourceID: "low"},
 		},
 		Errors: []string{"scan warning"}, PrincipalsScanned: 2,
+		CoverageGaps: []iam.CoverageGapObservation{{
+			Capability: "activity", Cause: "unavailable", Scope: "account:prod",
+			FindingID: iam.FindingUnusedRole, AffectedCount: 1, TotalCount: 1,
+			MaxConsequence: iam.SeverityMedium,
+		}},
 	}
 	wantTime := time.Date(2026, time.July, 19, 1, 2, 3, 0, time.UTC)
 	err := analyzeAndReport(result, postScanOptions{
@@ -236,6 +241,10 @@ func TestAnalyzeAndReportJSON(t *testing.T) {
 	}
 	if errorsValue, ok := decoded["errors"].([]any); !ok || len(errorsValue) != 1 || errorsValue[0] != "scan warning" {
 		t.Fatalf("errors = %#v, want scan warning", decoded["errors"])
+	}
+	coverage, ok := decoded["coverage_manifest"].(map[string]any)
+	if !ok || coverage["unique_missing_capabilities"] != float64(1) {
+		t.Fatalf("coverage_manifest = %#v", decoded["coverage_manifest"])
 	}
 	target, ok := decoded["target"].(map[string]any)
 	if !ok || target["type"] != "aws-account" || target["uri_hash"] != computeTargetHash("prod") {
