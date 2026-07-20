@@ -36,8 +36,9 @@ func (m *mockIAM) ListServiceAccountKeys(_ context.Context, name string) ([]*iam
 	return nil, nil
 }
 
+// WO-76: enabled stale keys retain the existing critical finding behavior.
 func TestServiceAccountScanner_StaleSAKey(t *testing.T) {
-	staleTime := time.Now().AddDate(0, 0, -100).Format(time.RFC3339)
+	staleTime := "2000-01-01T00:00:00Z"
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{
 			{Name: "projects/test/serviceAccounts/sa1", Email: "sa1@test.iam.gserviceaccount.com", UniqueId: "123"},
@@ -91,6 +92,63 @@ func TestServiceAccountScanner_RecentKey(t *testing.T) {
 
 	if len(result.Findings) != 0 {
 		t.Fatalf("expected 0 findings for recent key, got %d", len(result.Findings))
+	}
+}
+
+// WO-76: disabled keys are already inactive and must not be reported as stale credentials.
+func TestServiceAccountScanner_DisabledStaleKey(t *testing.T) {
+	mock := &mockIAM{
+		accounts: []*iamv1.ServiceAccount{
+			{Name: "projects/test/serviceAccounts/sa1", Email: "sa1@test.iam.gserviceaccount.com", UniqueId: "123"},
+		},
+		keys: map[string][]*iamv1.ServiceAccountKey{
+			"projects/test/serviceAccounts/sa1": {
+				{
+					Name:           "projects/test/serviceAccounts/sa1/keys/disabled",
+					ValidAfterTime: "2000-01-01T00:00:00Z",
+					Disabled:       true,
+				},
+			},
+		},
+	}
+
+	scanner := NewServiceAccountScanner(mock, "test")
+	result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if len(result.Findings) != 0 {
+		t.Fatalf("expected no finding for disabled key, got %#v", result.Findings)
+	}
+}
+
+// WO-76: disabled-key state takes precedence even when the credential is still recent.
+func TestServiceAccountScanner_DisabledRecentKey(t *testing.T) {
+	recentTime := time.Now().UTC().AddDate(0, 0, -10).Format(time.RFC3339)
+	mock := &mockIAM{
+		accounts: []*iamv1.ServiceAccount{
+			{Name: "projects/test/serviceAccounts/sa1", Email: "sa1@test.iam.gserviceaccount.com", UniqueId: "123"},
+		},
+		keys: map[string][]*iamv1.ServiceAccountKey{
+			"projects/test/serviceAccounts/sa1": {
+				{
+					Name:           "projects/test/serviceAccounts/sa1/keys/disabled-recent",
+					ValidAfterTime: recentTime,
+					Disabled:       true,
+				},
+			},
+		},
+	}
+
+	result, err := NewServiceAccountScanner(mock, "test").Scan(
+		context.Background(), iam.ScanConfig{StaleDays: 90},
+	)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("expected no finding for recent disabled key, got %#v", result.Findings)
 	}
 }
 

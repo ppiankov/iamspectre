@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,60 @@ func TestUserScanner_StaleUser(t *testing.T) {
 	}
 	if found.ResourceName != "alice@example.com" {
 		t.Fatalf("expected alice@example.com, got %s", found.ResourceName)
+	}
+}
+
+// WO-77: the newest user activity timestamp prevents false stale-user findings.
+func TestUserScanner_LatestActivityPreventsStaleUser(t *testing.T) {
+	oldInteractive := time.Now().AddDate(0, 0, -200)
+	recentNonInteractive := time.Now().AddDate(0, 0, -5)
+	users := []User{{
+		ID: "user-active", UserPrincipalName: "active@example.com", UserType: "Member",
+		SignInActivity: &SignInActivity{
+			LastSignInDateTime:               &oldInteractive,
+			LastNonInteractiveSignInDateTime: &recentNonInteractive,
+		},
+	}}
+	mock := &mockGraph{
+		authMethods: map[string][]AuthenticationMethod{
+			"user-active": {{ODataType: "#microsoft.graph.microsoftAuthenticatorAuthenticationMethod"}},
+		},
+		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+
+	result, err := NewUserScanner(mock, users, nil).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findFinding(result.Findings, iam.FindingStaleUser) != nil {
+		t.Fatalf("newer non-interactive activity emitted STALE_USER: %#v", result.Findings)
+	}
+}
+
+// WO-77: stale metadata identifies the newest usable evidence, not only interactive activity.
+func TestUserScanner_LatestActivityDrivesStaleMetadata(t *testing.T) {
+	evidenceNow := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	oldInteractive := evidenceNow.AddDate(0, 0, -220)
+	oldNonInteractive := evidenceNow.AddDate(0, 0, -180)
+	latestSuccessful := evidenceNow.AddDate(0, 0, -120)
+	user := User{
+		ID: "user-stale", UserPrincipalName: "stale@example.com", UserType: "Member",
+		SignInActivity: &SignInActivity{
+			LastSignInDateTime:               &oldInteractive,
+			LastNonInteractiveSignInDateTime: &oldNonInteractive,
+			LastSuccessfulSignInDateTime:     &latestSuccessful,
+		},
+	}
+	result := &iam.ScanResult{}
+	NewUserScanner(&mockGraph{}, nil, nil).checkStale(
+		user, iam.StaleThreshold(evidenceNow, 90), evidenceNow, result,
+	)
+	finding := findFinding(result.Findings, iam.FindingStaleUser)
+	if finding == nil || finding.Metadata["last_sign_in"] != latestSuccessful.Format(time.RFC3339) {
+		t.Fatalf("stale finding did not use latest activity: %#v", finding)
+	}
+	if finding.Metadata["days_since"] != 120 {
+		t.Fatalf("days_since = %v, want 120", finding.Metadata["days_since"])
 	}
 }
 
@@ -167,7 +222,8 @@ func TestUserScanner_NoMFA(t *testing.T) {
 
 	mock := &mockGraph{
 		authMethods: map[string][]AuthenticationMethod{
-			"user-3": {{ODataType: passwordMethodType}},
+			// WO-78: email is SSPR-only and must not upgrade password-only evidence to MFA.
+			"user-3": {{ODataType: passwordMethodType}, {ODataType: emailMethodType}},
 		},
 		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
 	}
@@ -181,8 +237,66 @@ func TestUserScanner_NoMFA(t *testing.T) {
 	if found == nil {
 		t.Fatal("expected NO_MFA finding")
 	}
-	if found.Severity != iam.SeverityCritical {
-		t.Fatalf("expected critical severity, got %s", found.Severity)
+	if found.Severity != iam.SeverityHigh {
+		t.Fatalf("expected high severity, got %s", found.Severity)
+	}
+}
+
+// WO-78: every supported Graph method family is classified explicitly and unknown types fail closed.
+func TestIsMFACapableMethodType(t *testing.T) {
+	tests := []struct {
+		name       string
+		methodType string
+		want       bool
+	}{
+		{name: "password", methodType: passwordMethodType},
+		{name: "email SSPR", methodType: emailMethodType},
+		{name: "unknown", methodType: "#microsoft.graph.futureAuthenticationMethod"},
+		{name: "authenticator", methodType: authenticatorMethodType, want: true},
+		{name: "FIDO2 passkey", methodType: fido2MethodType, want: true},
+		{name: "phone", methodType: phoneMethodType, want: true},
+		{name: "software OATH", methodType: softwareOATHMethodType, want: true},
+		{name: "temporary access pass", methodType: temporaryAccessPassMethodType, want: true},
+		{name: "Windows Hello", methodType: windowsHelloMethodType, want: true},
+		{name: "platform credential", methodType: platformCredentialMethodType, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isMFACapableMethodType(test.methodType); got != test.want {
+				t.Fatalf("isMFACapableMethodType(%q) = %t, want %t", test.methodType, got, test.want)
+			}
+		})
+	}
+}
+
+// WO-78: guest method absence remains visible without claiming knowledge of the home tenant.
+func TestUserScanner_GuestNoMFAUsesEvidenceAwareGrading(t *testing.T) {
+	recentSignIn := time.Now().AddDate(0, 0, -5)
+	users := []User{{
+		ID: "guest-no-mfa", UserPrincipalName: "guest@example.com", UserType: "Guest",
+		SignInActivity: &SignInActivity{LastSuccessfulSignInDateTime: &recentSignIn},
+	}}
+	mock := &mockGraph{
+		authMethods: map[string][]AuthenticationMethod{
+			"guest-no-mfa": {{ODataType: passwordMethodType}, {ODataType: emailMethodType}},
+		},
+		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+
+	result, err := NewUserScanner(mock, users, nil).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finding := findFinding(result.Findings, iam.FindingNoMFA)
+	if finding == nil || finding.Severity != iam.SeverityLow {
+		t.Fatalf("guest NO_MFA grading = %#v", finding)
+	}
+	if finding.Metadata["home_tenant_mfa_evidence"] != "unavailable" || finding.Metadata["evidence_scope"] != "resource_tenant" {
+		t.Fatalf("guest NO_MFA metadata = %#v", finding.Metadata)
+	}
+	if !strings.Contains(finding.Message, "home-tenant MFA evidence is unavailable") || !strings.Contains(finding.Recommendation, "home tenant") {
+		t.Fatalf("guest NO_MFA guidance = %#v", finding)
 	}
 }
 
@@ -220,6 +334,7 @@ func TestUserScanner_HasMFA(t *testing.T) {
 	}
 }
 
+// WO-79: disabled defaults remain visible without claiming effective policy exposure.
 func TestUserScanner_LegacyAuth_SecurityDefaultsDisabled(t *testing.T) {
 	users := []User{}
 	mock := &mockGraph{
@@ -234,6 +349,15 @@ func TestUserScanner_LegacyAuth_SecurityDefaultsDisabled(t *testing.T) {
 	found := findFinding(result.Findings, iam.FindingLegacyAuth)
 	if found == nil {
 		t.Fatal("expected LEGACY_AUTH finding when security defaults disabled")
+	}
+	if found.Severity != iam.SeverityLow || found.Metadata["evidence_state"] != "indeterminate" {
+		t.Fatalf("legacy-auth evidence grading = %#v", found)
+	}
+	if found.Metadata["conditional_access_evaluated"] != false || !strings.Contains(found.Message, "Conditional Access was not evaluated") {
+		t.Fatalf("legacy-auth evidence context = %#v", found)
+	}
+	if !strings.Contains(found.Recommendation, "Verify") || !strings.Contains(found.Recommendation, "Conditional Access") {
+		t.Fatalf("legacy-auth recommendation = %q", found.Recommendation)
 	}
 }
 
@@ -250,6 +374,21 @@ func TestUserScanner_LegacyAuth_SecurityDefaultsEnabled(t *testing.T) {
 
 	if findFinding(result.Findings, iam.FindingLegacyAuth) != nil {
 		t.Fatal("should not emit LEGACY_AUTH when security defaults are enabled")
+	}
+}
+
+// WO-79: a Security Defaults fetch error stays diagnostic and emits no unsupported verdict.
+func TestUserScanner_LegacyAuth_SecurityDefaultsError(t *testing.T) {
+	mock := &mockGraph{secDefaultsErr: fmt.Errorf("security defaults unavailable")}
+	result, err := NewUserScanner(mock, nil, nil).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("unexpected scanner error: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingLegacyAuth) != nil {
+		t.Fatalf("fetch error emitted LEGACY_AUTH: %#v", result.Findings)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "security defaults unavailable") {
+		t.Fatalf("fetch errors = %#v", result.Errors)
 	}
 }
 
@@ -283,6 +422,54 @@ func TestUserScanner_NoSignInActivity(t *testing.T) {
 	// Should still check MFA
 	if findFinding(result.Findings, iam.FindingNoMFA) == nil {
 		t.Fatal("should still emit NO_MFA even without signInActivity")
+	}
+}
+
+// WO-77: missing member and guest evidence produce separate tenant-scoped coverage observations.
+func TestUserScanner_MissingActivityCoverageByUserType(t *testing.T) {
+	recent := time.Now().AddDate(0, 0, -5)
+	users := []User{
+		{ID: "member-missing", UserPrincipalName: "member-missing@example.com", UserType: "Member"},
+		{ID: "member-present", UserPrincipalName: "member-present@example.com", UserType: "Member", SignInActivity: &SignInActivity{LastSuccessfulSignInDateTime: &recent}},
+		{ID: "guest-missing", UserPrincipalName: "guest-missing@example.com", UserType: "Guest"},
+		{ID: "guest-present", UserPrincipalName: "guest-present@example.com", UserType: "Guest", SignInActivity: &SignInActivity{LastNonInteractiveSignInDateTime: &recent}},
+	}
+	authMethods := make(map[string][]AuthenticationMethod, len(users))
+	for _, user := range users {
+		authMethods[user.ID] = []AuthenticationMethod{{ODataType: "#microsoft.graph.microsoftAuthenticatorAuthenticationMethod"}}
+	}
+	mock := &mockGraph{authMethods: authMethods, secDefaults: &SecurityDefaultsPolicy{IsEnabled: true}}
+
+	result, err := NewUserScannerWithScope(mock, users, nil, "azure-tenant:tenant-a").Scan(
+		context.Background(), iam.ScanConfig{StaleDays: 90},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, findingID := range []iam.FindingID{iam.FindingStaleUser, iam.FindingStaleGuestUser} {
+		gap := findCoverageGap(result.CoverageGaps, findingID)
+		if gap == nil || gap.Scope != "azure-tenant:tenant-a" || gap.AffectedCount != 1 || gap.EvaluableCount != 1 || gap.TotalCount != 2 {
+			t.Fatalf("coverage for %s = %#v", findingID, gap)
+		}
+	}
+}
+
+// WO-77: explicit principal and guest exclusions do not become coverage opportunities.
+func TestUserScanner_MissingActivityCoverageExcludesOutOfScopeUsers(t *testing.T) {
+	users := []User{
+		{ID: "excluded-member", UserPrincipalName: "excluded@example.com", UserType: "Member"},
+		{ID: "excluded-guest", UserPrincipalName: "guest@example.com", UserType: "Guest"},
+	}
+	mock := &mockGraph{secDefaults: &SecurityDefaultsPolicy{IsEnabled: true}}
+	result, err := NewUserScannerWithScope(mock, users, nil, "azure-tenant:tenant-a").Scan(context.Background(), iam.ScanConfig{
+		StaleDays: 90, ExcludeGuests: true,
+		Exclude: iam.ExcludeConfig{Principals: map[string]bool{"excluded@example.com": true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.CoverageGaps) != 0 {
+		t.Fatalf("excluded users produced coverage: %#v", result.CoverageGaps)
 	}
 }
 
@@ -333,6 +520,16 @@ func findFinding(findings []iam.Finding, id iam.FindingID) *iam.Finding {
 	for _, f := range findings {
 		if f.ID == id {
 			return &f
+		}
+	}
+	return nil
+}
+
+// WO-77: findCoverageGap keeps coverage assertions focused on the affected finding class.
+func findCoverageGap(gaps []iam.CoverageGapObservation, id iam.FindingID) *iam.CoverageGapObservation {
+	for index := range gaps {
+		if gaps[index].FindingID == id {
+			return &gaps[index]
 		}
 	}
 	return nil

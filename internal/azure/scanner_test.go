@@ -34,6 +34,25 @@ func TestAzureScanner_ScanAll_Empty(t *testing.T) {
 	}
 }
 
+// WO-77: production orchestration binds user activity coverage to the scanned tenant.
+func TestAzureScanner_UserActivityCoverageUsesTenantScope(t *testing.T) {
+	mock := &mockGraph{
+		users: []User{{ID: "user-missing", UserPrincipalName: "missing@example.com", UserType: "Member"}},
+		authMethods: map[string][]AuthenticationMethod{
+			"user-missing": {{ODataType: "#microsoft.graph.microsoftAuthenticatorAuthenticationMethod"}},
+		},
+		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+	result, err := NewAzureScanner(NewClientWith("tenant-a", mock), iam.ScanConfig{StaleDays: 90}).ScanAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gap := findCoverageGap(result.CoverageGaps, iam.FindingStaleUser)
+	if gap == nil || gap.Scope != "azure-tenant:tenant-a" || gap.AffectedCount != 1 {
+		t.Fatalf("user activity coverage = %#v", gap)
+	}
+}
+
 // WO-68@v3: unavailable beta evidence clears legacy activity without blocking other Azure checks.
 func TestAzureScanner_ServicePrincipalActivityUnavailable(t *testing.T) {
 	legacySignIn := time.Now().AddDate(0, 0, -200)
@@ -134,11 +153,13 @@ func TestAzureScanner_ScanAll_Integration(t *testing.T) {
 			},
 		},
 		sps: []ServicePrincipal{
+			// WO-80@v2: integration findings require the tenant-local Graph resource identity.
+			{ID: "graph-resource-sp", AppID: microsoftGraphAppID, DisplayName: "Microsoft Graph"},
 			{
 				ID:          "sp-1",
 				DisplayName: "Overprivileged SP",
 				AppRoleAssignments: []AppRoleAssignment{
-					{AppRoleID: "19dbc75e-c2e2-444c-a770-ec69d8559fc7"},
+					{AppRoleID: "19dbc75e-c2e2-444c-a770-ec69d8559fc7", ResourceID: "graph-resource-sp"},
 				},
 			},
 		},
@@ -192,7 +213,8 @@ func TestBuildPrincipalActivityMap(t *testing.T) {
 	oldSignIn := time.Now().AddDate(0, 0, -200)
 
 	users := []User{
-		{ID: "active-user", SignInActivity: &SignInActivity{LastSignInDateTime: &recentSignIn}},
+		// WO-77: recent successful activity overrides stale interactive activity for roles too.
+		{ID: "active-user", SignInActivity: &SignInActivity{LastSignInDateTime: &oldSignIn, LastSuccessfulSignInDateTime: &recentSignIn}},
 		{ID: "stale-user", SignInActivity: &SignInActivity{LastSignInDateTime: &oldSignIn}},
 		{ID: "no-data-user"},
 	}

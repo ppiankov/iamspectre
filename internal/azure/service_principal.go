@@ -7,8 +7,10 @@ import (
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
 
+// WO-80@v2: microsoftGraphAppID identifies Microsoft Graph independently of tenant-local names and object IDs.
+const microsoftGraphAppID = "00000003-0000-0000-c000-000000000000"
+
 // overprivilegedRoleIDs maps well-known Microsoft Graph app role GUIDs to their names.
-// Resource app ID: 00000003-0000-0000-c000-000000000000 (Microsoft Graph).
 var overprivilegedRoleIDs = map[string]string{
 	"19dbc75e-c2e2-444c-a770-ec69d8559fc7": "Directory.ReadWrite.All",
 	"9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8": "RoleManagement.ReadWrite.Directory",
@@ -41,6 +43,7 @@ func (s *ServicePrincipalScanner) Type() iam.ResourceType {
 }
 
 // WO-68@v3: Scan preserves overprivileged checks when activity evidence is unavailable.
+// WO-80@v2: Scan qualifies dangerous app-role GUIDs by their defining resource identity.
 func (s *ServicePrincipalScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
 	if s.fetchErr != nil {
 		return nil, fmt.Errorf("fetch service principals: %w", s.fetchErr)
@@ -53,6 +56,7 @@ func (s *ServicePrincipalScanner) Scan(ctx context.Context, cfg iam.ScanConfig) 
 	if s.coverage != nil {
 		result.CoverageGaps = append(result.CoverageGaps, *s.coverage)
 	}
+	graphResourceID := microsoftGraphResourceID(s.sps)
 
 	for _, sp := range s.sps {
 		if iam.IsExcluded(cfg, sp.ID, sp.DisplayName) { // WO-14@v3: use the shared exclusion policy.
@@ -63,14 +67,39 @@ func (s *ServicePrincipalScanner) Scan(ctx context.Context, cfg iam.ScanConfig) 
 		// is reported as a coverage gap (see joinServicePrincipalActivity) — never as a severity
 		// finding built on beta data, which is not a supportable production signal. The beta
 		// enrichment survives only to feed the role-activity coverage map.
-		s.checkOverprivileged(sp, result)
+		s.checkOverprivileged(sp, graphResourceID, result)
 	}
 
 	return result, nil
 }
 
-func (s *ServicePrincipalScanner) checkOverprivileged(sp ServicePrincipal, result *iam.ScanResult) {
+// WO-80@v2: resolve the tenant-local resource ID only from Microsoft's stable application ID.
+func microsoftGraphResourceID(servicePrincipals []ServicePrincipal) string {
+	var resourceID string
+	for _, sp := range servicePrincipals {
+		if sp.AppID != microsoftGraphAppID || sp.ID == "" {
+			continue
+		}
+		if resourceID != "" && resourceID != sp.ID {
+			return ""
+		}
+		resourceID = sp.ID
+	}
+	return resourceID
+}
+
+// WO-80@v2: checkOverprivileged refuses role semantics without authoritative Graph resource identity.
+func (s *ServicePrincipalScanner) checkOverprivileged(sp ServicePrincipal, graphResourceID string, result *iam.ScanResult) {
+	// WO-80@v2: an unknown resource identity cannot safely authorize GUID classification.
+	if graphResourceID == "" {
+		return
+	}
+
 	for _, assignment := range sp.AppRoleAssignments {
+		// WO-80@v2: app-role GUIDs are scoped to their defining resource service principal.
+		if assignment.ResourceID != graphResourceID {
+			continue
+		}
 		roleName, dangerous := overprivilegedRoleIDs[assignment.AppRoleID]
 		if !dangerous {
 			continue
