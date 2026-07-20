@@ -72,12 +72,17 @@ func (s *ServiceAccountScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*
 	return result, nil
 }
 
+// WO-76: stale-key findings apply only to credentials that can still authenticate.
 func (s *ServiceAccountScanner) checkKeys(sa *iamv1.ServiceAccount, keys []*iamv1.ServiceAccountKey, cfg iam.ScanConfig) []iam.Finding {
 	var findings []iam.Finding
 	now := time.Now().UTC()
 	threshold := iam.StaleThreshold(now, cfg.StaleDays) // WO-24@v2: use the shared calendar cutoff.
 
 	for _, key := range keys {
+		if key.Disabled { // WO-76: an inactive key cannot present stale-credential exposure.
+			continue
+		}
+
 		created, err := time.Parse(time.RFC3339, key.ValidAfterTime)
 		if err != nil {
 			slog.Warn("Failed to parse key time", "key", key.Name, "error", err)

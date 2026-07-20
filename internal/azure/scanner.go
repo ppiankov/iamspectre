@@ -37,7 +37,7 @@ func (s *AzureScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 	principalActivity := buildPrincipalActivityMap(users, sps, s.scanCfg.StaleDays)
 
 	scanners := []iam.Scanner{
-		NewUserScanner(s.client.Graph, users, usersErr),
+		NewUserScannerWithScope(s.client.Graph, users, usersErr, "azure-tenant:"+s.client.TenantID), // WO-77: scope missing user activity evidence to this tenant.
 		NewAppScanner(s.client.Graph),
 		NewServicePrincipalScannerWithActivityCoverage(s.client.Graph, sps, spsErr, spActivityErr, spCoverage),
 		NewRoleScannerWithScope(s.client.Graph, principalActivity, "azure-tenant:"+s.client.TenantID), // WO-73@v1: bind unknown role evidence to tenant scope.
@@ -105,8 +105,8 @@ func buildPrincipalActivityMap(users []User, sps []ServicePrincipal, staleDays i
 
 	for _, u := range users {
 		activity[u.ID] = PrincipalActivityUnknown
-		if u.SignInActivity != nil && u.SignInActivity.LastSignInDateTime != nil {
-			if u.SignInActivity.LastSignInDateTime.After(cutoff) {
+		if latestActivity := latestUserActivity(u.SignInActivity); latestActivity != nil { // WO-77: role activity shares the complete user evidence rule.
+			if latestActivity.After(cutoff) {
 				activity[u.ID] = PrincipalActivityRecent
 			} else {
 				activity[u.ID] = PrincipalActivityStale

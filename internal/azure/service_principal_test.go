@@ -25,7 +25,10 @@ func TestServicePrincipalScanner_FetchError(t *testing.T) {
 }
 
 func TestServicePrincipalScanner_OverprivilegedApp(t *testing.T) {
+	// WO-80@v2: the dangerous role belongs to the tenant-local Microsoft Graph resource.
+	const graphResourceID = "graph-resource-sp"
 	sps := []ServicePrincipal{
+		{ID: graphResourceID, AppID: microsoftGraphAppID, DisplayName: "Microsoft Graph"},
 		{
 			ID:          "sp-1",
 			AppID:       "app-id-1",
@@ -33,6 +36,7 @@ func TestServicePrincipalScanner_OverprivilegedApp(t *testing.T) {
 			AppRoleAssignments: []AppRoleAssignment{
 				{
 					AppRoleID:           "19dbc75e-c2e2-444c-a770-ec69d8559fc7", // Directory.ReadWrite.All
+					ResourceID:          graphResourceID,
 					ResourceDisplayName: "Microsoft Graph",
 				},
 			},
@@ -54,6 +58,74 @@ func TestServicePrincipalScanner_OverprivilegedApp(t *testing.T) {
 	}
 	if found.Metadata["role_name"] != "Directory.ReadWrite.All" {
 		t.Fatalf("expected Directory.ReadWrite.All, got %v", found.Metadata["role_name"])
+	}
+}
+
+// WO-80@v2: a GUID collision in another resource application must not inherit Graph semantics.
+func TestServicePrincipalScanner_CrossResourceRoleGUID(t *testing.T) {
+	const graphResourceID = "graph-resource-sp"
+	sps := []ServicePrincipal{
+		{ID: graphResourceID, AppID: microsoftGraphAppID},
+		{
+			ID: "client-sp",
+			AppRoleAssignments: []AppRoleAssignment{{
+				AppRoleID:           "19dbc75e-c2e2-444c-a770-ec69d8559fc7",
+				ResourceID:          "other-resource-sp",
+				ResourceDisplayName: "Other API",
+			}},
+		},
+	}
+
+	result, err := NewServicePrincipalScanner(&mockGraph{}, sps, nil).Scan(context.Background(), iam.ScanConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingOverprivilegedApp) != nil {
+		t.Fatal("cross-resource role GUID must not emit OVERPRIVILEGED_APP")
+	}
+}
+
+// WO-80@v2: a display name is mutable metadata, not resource identity evidence.
+func TestServicePrincipalScanner_MisleadingGraphDisplayName(t *testing.T) {
+	const graphResourceID = "graph-resource-sp"
+	sps := []ServicePrincipal{
+		{ID: graphResourceID, AppID: microsoftGraphAppID},
+		{
+			ID: "client-sp",
+			AppRoleAssignments: []AppRoleAssignment{{
+				AppRoleID:           "19dbc75e-c2e2-444c-a770-ec69d8559fc7",
+				ResourceID:          "other-resource-sp",
+				ResourceDisplayName: "Microsoft Graph",
+			}},
+		},
+	}
+
+	result, err := NewServicePrincipalScanner(&mockGraph{}, sps, nil).Scan(context.Background(), iam.ScanConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingOverprivilegedApp) != nil {
+		t.Fatal("display name alone must not emit OVERPRIVILEGED_APP")
+	}
+}
+
+// WO-80@v2: missing Graph identity leaves the assignment unclassified instead of guessed.
+func TestServicePrincipalScanner_MissingGraphResourceIdentity(t *testing.T) {
+	sps := []ServicePrincipal{{
+		ID: "client-sp",
+		AppRoleAssignments: []AppRoleAssignment{{
+			AppRoleID:           "19dbc75e-c2e2-444c-a770-ec69d8559fc7",
+			ResourceID:          "unknown-resource-sp",
+			ResourceDisplayName: "Microsoft Graph",
+		}},
+	}}
+
+	result, err := NewServicePrincipalScanner(&mockGraph{}, sps, nil).Scan(context.Background(), iam.ScanConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingOverprivilegedApp) != nil {
+		t.Fatal("missing Graph resource identity must not emit OVERPRIVILEGED_APP")
 	}
 }
 
