@@ -42,6 +42,7 @@ func TestServiceAuthorizationCatalogReproducible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read checked-in catalog: %v", err)
 	}
+	checkedIn = normalizeCatalogCheckout(checkedIn)
 	if !bytes.Equal(first, checkedIn) {
 		t.Fatal("checked-in catalog differs from deterministic regeneration")
 	}
@@ -52,6 +53,21 @@ func TestServiceAuthorizationCatalogReproducible(t *testing.T) {
 	}
 	if resourceApplicabilityCatalogDigest == "" || !bytes.Contains(first, []byte(`const resourceApplicabilityCatalogDigest = "`+resourceApplicabilityCatalogDigest+`"`)) {
 		t.Fatal("generated catalog does not expose its pinned input digest")
+	}
+}
+
+// WO-64@v3: normalize only Git's CRLF checkout representation, never fixture evidence.
+func normalizeCatalogCheckout(content []byte) []byte {
+	return bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+}
+
+// WO-64@v3: pin identical comparison content for LF and CRLF checkouts.
+func TestNormalizeCatalogCheckout(t *testing.T) {
+	want := []byte("line one\nline two\n")
+	for _, content := range [][]byte{want, []byte("line one\r\nline two\r\n")} {
+		if got := normalizeCatalogCheckout(content); !bytes.Equal(got, want) {
+			t.Fatalf("normalized content = %q, want %q", got, want)
+		}
 	}
 }
 
