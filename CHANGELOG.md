@@ -5,6 +5,24 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-20
+
+### Added
+
+- Coverage manifest: scan output now carries a second plane alongside actionable findings — a deduplicated, order-independent manifest of evidence gaps (capability, cause, scope, and affected finding classes) so missing evidence is reported explicitly instead of silently narrowing coverage
+- `DISABLED_SA` finding: a disabled GCP service account is reported as an informational, low-severity lifecycle fact (disabling is the recommended reversible pre-deletion state), preserving the observation without high-severity delete advice
+
+### Changed
+
+- GCP disabled service accounts are no longer reported as `STALE_SA` with delete advice; staleness is driven only by key evidence, and the disabled fact and stale-key evidence are independent axes (both can be reported for the same account)
+- Azure `STALE_SP` is no longer emitted as a severity finding from Microsoft Graph beta sign-in data; service-principal sign-in activity is now reported as a coverage gap (and used only to enrich role-activity evidence)
+- Azure `UNUSED_ROLE` distinguishes principal inactivity from missing sign-in evidence rather than treating absence as inactivity
+
+### Fixed
+
+- Azure service-principal coverage counts now exclude out-of-scope principals so exclusions no longer inflate evidence-gap totals
+- SpectreHub envelope projection no longer loses resource identity for partial or unidentified scans
+
 ## [0.3.0] - 2026-07-20
 
 ### Added
