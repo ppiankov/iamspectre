@@ -3,15 +3,23 @@ package report
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
 
-// WO-74@v3: spectre/v1 accepts info even though native scanners currently emit low and above.
-const spectreHubInfoSeverity iam.Severity = "info"
+// WO-74@v5: name the current consumer allowlist so producer validation cannot drift silently.
+const (
+	spectreHubInfoSeverity iam.Severity = "info"
+	spectreHubTargetAWS    string       = "aws-account"
+	spectreHubTargetGCP    string       = "gcp-project"
+)
 
-// WO-74@v3: spectrehubEnvelope maps supported native findings onto the stable spectre/v1 contract.
+// WO-74@v5: mirror the current consumer schema's release-version requirement.
+var spectreHubVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]`)
+
+// WO-74@v5: spectrehubEnvelope maps supported native findings onto the stable spectre/v1 contract.
 type spectrehubEnvelope struct {
 	Schema    string              `json:"schema"`
 	Tool      string              `json:"tool"`
@@ -22,7 +30,7 @@ type spectrehubEnvelope struct {
 	Summary   spectrehubSummary   `json:"summary"`
 }
 
-// WO-74@v3: spectrehubFinding preserves consumer identity and supported severity fields explicitly.
+// WO-74@v5: spectrehubFinding preserves consumer identity and supported severity fields explicitly.
 type spectrehubFinding struct {
 	ID       iam.FindingID `json:"id"`
 	Severity iam.Severity  `json:"severity"`
@@ -30,7 +38,7 @@ type spectrehubFinding struct {
 	Message  string        `json:"message"`
 }
 
-// WO-74@v3: spectrehubSummary uses the canonical transport counter names.
+// WO-74@v5: spectrehubSummary uses the canonical transport counter names.
 type spectrehubSummary struct {
 	Total  int `json:"total"`
 	High   int `json:"high"`
@@ -41,16 +49,43 @@ type spectrehubSummary struct {
 
 // Generate produces spectre/v1 envelope JSON output.
 func (r *SpectreHubReporter) Generate(data Data) error {
-	// WO-74@v3: fail closed until the consumer can represent coverage without dropping evidence.
+	// WO-74@v5: required envelope metadata must pass the consumer contract before any output.
+	if data.Tool != "iamspectre" {
+		return fmt.Errorf("spectre/v1 requires tool %q, got %q", "iamspectre", data.Tool)
+	}
+	if !spectreHubVersionPattern.MatchString(data.Version) {
+		return fmt.Errorf("spectre/v1 requires a semantic version, got %q", data.Version)
+	}
+	if data.Timestamp.IsZero() {
+		return fmt.Errorf("spectre/v1 requires a nonzero timestamp")
+	}
+	// WO-74@v5: fail closed until the consumer can represent diagnostics and coverage without loss.
+	if len(data.Errors) > 0 {
+		return fmt.Errorf("spectre/v1 does not support scan diagnostics; coordinated consumer support is required")
+	}
 	if len(data.Coverage.Gaps) > 0 || data.Coverage.EvaluableOpportunities != 0 ||
 		data.Coverage.TotalOpportunities != 0 || data.Coverage.UniqueMissingCapabilities != 0 ||
 		data.Coverage.OldestEvidence != nil {
 		return fmt.Errorf("spectre/v1 does not support coverage_manifest; coordinated consumer support is required")
 	}
-	// WO-74@v3: explicit projection prevents native field names from leaking into spectre/v1.
+	switch data.Target.Type {
+	case spectreHubTargetAWS, spectreHubTargetGCP:
+	default:
+		return fmt.Errorf("spectre/v1 does not support target type %q", data.Target.Type)
+	}
+	// WO-74@v5: explicit validation and projection prevent invalid identity from reaching consumers.
 	findings := make([]spectrehubFinding, 0, len(data.Findings))
 	summary := spectrehubSummary{}
 	for _, finding := range data.Findings {
+		if finding.ID == "" {
+			return fmt.Errorf("spectre/v1 finding id must not be empty")
+		}
+		if finding.ResourceID == "" {
+			return fmt.Errorf("spectre/v1 finding location must not be empty for finding %s", finding.ID)
+		}
+		if finding.Message == "" {
+			return fmt.Errorf("spectre/v1 finding message must not be empty for finding %s", finding.ID)
+		}
 		switch finding.Severity {
 		case iam.SeverityHigh:
 			summary.High++

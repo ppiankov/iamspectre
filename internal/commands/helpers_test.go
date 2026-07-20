@@ -306,11 +306,16 @@ func (w *closeErrorWriter) Close() error { return w.err }
 
 // WO-25@v2: every reporter format must execute through the shared pipeline.
 func TestAnalyzeAndReportFormats(t *testing.T) {
+	// WO-74@v5: SpectreHub integration uses release metadata accepted by the consumer schema.
+	oldVersion := version
+	version = "0.1.0"
+	t.Cleanup(func() { version = oldVersion })
 	for _, format := range []string{"text", "json", "sarif", "spectrehub"} {
 		t.Run(format, func(t *testing.T) {
 			var output bytes.Buffer
 			err := analyzeAndReport(&iam.ScanResult{}, postScanOptions{
 				format: format, severityMin: "low", timestamp: time.Unix(0, 0).UTC(), writer: &output,
+				targetType: "aws-account",
 			})
 			if err != nil || output.Len() == 0 {
 				t.Fatalf("format %s output=%q err=%v", format, output.String(), err)

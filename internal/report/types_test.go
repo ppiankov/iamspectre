@@ -250,7 +250,7 @@ func TestJSONReporter(t *testing.T) {
 	}
 }
 
-// WO-74@v3: pin canonical locations, stable IDs, supported severity, and summary field names.
+// WO-74@v5: pin canonical locations, stable IDs, supported severity, and summary field names.
 func TestSpectreHubReporter(t *testing.T) {
 	var buf bytes.Buffer
 	r := &SpectreHubReporter{Writer: &buf}
@@ -284,15 +284,58 @@ func TestSpectreHubReporter(t *testing.T) {
 	}
 }
 
-// WO-74@v3: unsupported consumer capabilities fail before emitting partial or invalid JSON.
+// WO-74@v5: unsupported metadata, capabilities, and malformed findings fail before any output.
 func TestSpectreHubReporterRejectsUnsupportedData(t *testing.T) {
+	supported := testData()
+	supported.Findings[0].Severity = iam.SeverityHigh
+
+	diagnostics := supported
+	diagnostics.Errors = []string{"activity report unavailable"}
+	coverage := supported
+	coverage.Coverage = CoverageManifest{Gaps: []CoverageGap{{Capability: "azure_activity"}}}
+	azureTarget := supported
+	azureTarget.Target.Type = "azure-tenant"
+	emptyID := supported
+	emptyID.Findings = append([]iam.Finding(nil), supported.Findings...)
+	emptyID.Findings[0].ID = ""
+	emptyLocation := supported
+	emptyLocation.Findings = append([]iam.Finding(nil), supported.Findings...)
+	emptyLocation.Findings[0].ResourceID = ""
+	emptyMessage := supported
+	emptyMessage.Findings = append([]iam.Finding(nil), supported.Findings...)
+	emptyMessage.Findings[0].Message = ""
+	unknownSeverity := supported
+	unknownSeverity.Findings = append([]iam.Finding(nil), supported.Findings...)
+	unknownSeverity.Findings[0].Severity = iam.Severity("urgent")
+	emptyTool := supported
+	emptyTool.Tool = ""
+	wrongTool := supported
+	wrongTool.Tool = "awsspectre"
+	emptyVersion := supported
+	emptyVersion.Version = ""
+	developmentVersion := supported
+	developmentVersion.Version = "dev"
+	zeroTimestamp := supported
+	zeroTimestamp.Timestamp = time.Time{}
+
 	tests := []struct {
 		name string
 		data Data
 		want string
 	}{
 		{name: "critical", data: testData(), want: "does not support critical severity"},
-		{name: "coverage", data: Data{Coverage: CoverageManifest{Gaps: []CoverageGap{{Capability: "azure_activity"}}}}, want: "does not support coverage_manifest"},
+		{name: "coverage", data: coverage, want: "does not support coverage_manifest"},
+		{name: "diagnostics", data: diagnostics, want: "does not support scan diagnostics"},
+		{name: "target", data: azureTarget, want: "does not support target type"},
+		{name: "empty id", data: emptyID, want: "id must not be empty"},
+		{name: "empty location", data: emptyLocation, want: "location must not be empty"},
+		{name: "empty message", data: emptyMessage, want: "message must not be empty"},
+		{name: "unknown severity", data: unknownSeverity, want: "does not support severity"},
+		{name: "empty tool", data: emptyTool, want: "requires tool"},
+		{name: "wrong tool", data: wrongTool, want: "requires tool"},
+		{name: "empty version", data: emptyVersion, want: "requires a semantic version"},
+		{name: "development version", data: developmentVersion, want: "requires a semantic version"},
+		{name: "zero timestamp", data: zeroTimestamp, want: "requires a nonzero timestamp"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -303,6 +346,25 @@ func TestSpectreHubReporterRejectsUnsupportedData(t *testing.T) {
 			}
 			if buf.Len() != 0 {
 				t.Fatalf("partial output = %q", buf.String())
+			}
+		})
+	}
+}
+
+// WO-74@v5: current IAMSpectre AWS and GCP targets remain valid spectre/v1 values.
+func TestSpectreHubReporterSupportsCurrentTargets(t *testing.T) {
+	for _, targetType := range []string{"aws-account", "gcp-project"} {
+		t.Run(targetType, func(t *testing.T) {
+			var buf bytes.Buffer
+			data := Data{
+				Tool: "iamspectre", Version: "0.1.0", Timestamp: time.Unix(0, 0).UTC(),
+				Target: Target{Type: targetType},
+			}
+			if err := (&SpectreHubReporter{Writer: &buf}).Generate(data); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(buf.String(), `"type": "`+targetType+`"`) {
+				t.Fatalf("target output = %s", buf.String())
 			}
 		})
 	}
