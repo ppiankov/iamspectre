@@ -5,6 +5,24 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `INACTIVE_IAM_USER` finding for whole-principal dormancy (no console *and* no access-key activity), distinct from console-credential staleness
+
+### Changed
+
+- `STALE_USER` now reflects console-credential staleness only — access-key activity no longer masks a dormant console credential
+- `WILDCARD_POLICY` is now evidence-aware: severity is graded using a pinned action resource-applicability catalog and a condition-boundedness assessment, so mandatory (no resource-level support), resource-scoped, and condition-bounded wildcards are no longer uniformly rated critical
+- Credential-report findings are evaluated against the report's generation time rather than scan time
+
+### Fixed
+
+- `UNUSED_ROLE` no longer reports a role as unused when `RoleLastUsed` evidence is unavailable (missing evidence is not proof of never-used)
+- `NO_MFA` distinguishes API-only users (no console password) from console users
+- `STALE_ACCESS_KEY` handles never-recorded-use and key-rotation evidence explicitly
+
 ## [0.2.4] - 2026-07-20
 
 ### Fixed
