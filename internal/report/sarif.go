@@ -150,6 +150,8 @@ func sarifLevel(s iam.Severity) string {
 func buildSARIFRules() []sarifRule {
 	return []sarifRule{
 		{ID: string(iam.FindingStaleUser), ShortDescription: sarifMessage{Text: "Stale IAM user"}},
+		// WO-55@v4: register whole-principal dormancy as its own SARIF rule descriptor.
+		{ID: string(iam.FindingInactiveIAMUser), ShortDescription: sarifMessage{Text: "Inactive IAM user"}},
 		{ID: string(iam.FindingStaleAccessKey), ShortDescription: sarifMessage{Text: "Stale access key"}},
 		{ID: string(iam.FindingNoMFA), ShortDescription: sarifMessage{Text: "Console user without MFA"}},
 		{ID: string(iam.FindingUnusedRole), ShortDescription: sarifMessage{Text: "Unused IAM role"}},

@@ -51,6 +51,7 @@ type FindingID string
 
 const (
 	FindingStaleUser         FindingID = "STALE_USER"
+	FindingInactiveIAMUser   FindingID = "INACTIVE_IAM_USER" // WO-55@v4: whole-principal dormancy is a distinct axis from console-credential staleness.
 	FindingStaleAccessKey    FindingID = "STALE_ACCESS_KEY"
 	FindingNoMFA             FindingID = "NO_MFA"
 	FindingUnusedRole        FindingID = "UNUSED_ROLE"

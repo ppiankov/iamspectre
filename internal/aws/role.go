@@ -59,6 +59,7 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 		}
 
 		serviceLinked := isServiceLinkedRole(role)
+		webIdentity := classifyWebIdentityTrust(role.AssumeRolePolicyDocument) // WO-54@v3: annotate determinate trust without changing the finding decision.
 		includeUnused := !serviceLinked || cfg.IncludeServiceLinkedRoles
 		severity, recommendation := unusedRolePresentation(role, serviceLinked)
 
@@ -67,39 +68,29 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 			if role.RoleLastUsed != nil && role.RoleLastUsed.LastUsedDate != nil {
 				if role.RoleLastUsed.LastUsedDate.Before(threshold) {
 					daysSince := int(now.Sub(*role.RoleLastUsed.LastUsedDate).Hours() / 24)
+					message := fmt.Sprintf("Role not assumed in %d days", daysSince)
+					metadata := map[string]any{
+						"last_used":      role.RoleLastUsed.LastUsedDate.Format(time.RFC3339),
+						"days_since_use": daysSince,
+					}
+					if webIdentity {
+						metadata["trust_mechanism"] = "web_identity" // WO-54@v3: annotation does not alter severity or guidance.
+					}
 					result.Findings = append(result.Findings, iam.Finding{
 						ID:             iam.FindingUnusedRole,
 						Severity:       severity,
 						ResourceType:   iam.ResourceIAMRole,
 						ResourceID:     roleARN,
 						ResourceName:   roleName,
-						Message:        fmt.Sprintf("Role not assumed in %d days", daysSince),
+						Message:        message,
 						Recommendation: recommendation,
-						Metadata: map[string]any{
-							"last_used":      role.RoleLastUsed.LastUsedDate.Format(time.RFC3339),
-							"days_since_use": daysSince,
-						},
+						Metadata:       metadata,
 					})
 				}
-			} else if role.CreateDate == nil {
+			} else {
 				// WO-50: absent age evidence cannot justify a synthetic UNUSED_ROLE finding.
-				result.Errors = append(result.Errors, fmt.Sprintf("evaluate unused role %s: creation date is missing", roleName))
-			} else if createDate := awssdk.ToTime(role.CreateDate); createDate.Before(threshold) {
-				daysSince := int(now.Sub(createDate).Hours() / 24)
-				result.Findings = append(result.Findings, iam.Finding{
-					ID:             iam.FindingUnusedRole,
-					Severity:       severity,
-					ResourceType:   iam.ResourceIAMRole,
-					ResourceID:     roleARN,
-					ResourceName:   roleName,
-					Message:        fmt.Sprintf("Role never assumed (created %d days ago)", daysSince),
-					Recommendation: recommendation,
-					Metadata: map[string]any{
-						"created":        createDate.Format(time.RFC3339),
-						"days_since_use": daysSince,
-						"never_used":     true,
-					},
-				})
+				// WO-54@v3: CreateDate cannot substitute for missing trailing-window usage evidence.
+				result.Errors = append(result.Errors, fmt.Sprintf("evaluate unused role %s: RoleLastUsed evidence is unavailable", roleName))
 			}
 		}
 
@@ -108,6 +99,40 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	}
 
 	return result, nil
+}
+
+// WO-54@v3: classify only determinate OIDC trust grants for metadata annotation.
+func classifyWebIdentityTrust(policyDoc *string) bool {
+	if policyDoc == nil {
+		return false
+	}
+	doc, err := ParsePolicyDocument(*policyDoc)
+	if err != nil {
+		return false
+	}
+	for _, statement := range doc.Statement {
+		if statement.Effect != "Allow" || statement.AssessActions().State != ActionAssessmentDeterminate {
+			continue
+		}
+		grantsWebIdentity := false
+		for _, action := range statement.Action {
+			if matchesActionPattern(action, "sts:AssumeRoleWithWebIdentity") {
+				grantsWebIdentity = true
+				break
+			}
+		}
+		if !grantsWebIdentity || statement.Principal == nil {
+			continue
+		}
+		for _, principal := range statement.Principal.Federated {
+			parts := strings.SplitN(principal, ":", 6)
+			if len(parts) == 6 && parts[0] == "arn" && strings.EqualFold(parts[2], "iam") &&
+				strings.HasPrefix(parts[5], "oidc-provider/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // WO-44@v2: recognize only structural service-linked path, ARN, or canonical name shapes.
