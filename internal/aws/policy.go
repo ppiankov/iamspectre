@@ -93,27 +93,45 @@ func (s *PolicyScanner) checkWildcardPolicy(ctx context.Context, policy iamtypes
 		return
 	}
 
-	if doc.HasWildcardAction() || doc.HasWildcardResource() {
+	wildcardAction := doc.HasWildcardAction()
+	wildcardResource := doc.HasWildcardResource()
+	resourceApplicability := doc.AssessResourceApplicability()
+	if resourceApplicability.State == ResourceApplicabilityDeterminate && resourceApplicability.AllNone {
+		wildcardResource = false // WO-65@v2: Resource:* is mandatory syntax for actions with no resource type.
+	}
+
+	if wildcardAction || wildcardResource {
+		condition := doc.AssessConditionBoundedness()
 		wildcardType := "resource"
-		if doc.HasWildcardAction() {
+		if wildcardAction {
 			wildcardType = "action"
 		}
-		if doc.HasWildcardAction() && doc.HasWildcardResource() {
+		if wildcardAction && wildcardResource {
 			wildcardType = "action and resource"
+		}
+
+		severity := iam.SeverityCritical
+		if !wildcardAction && condition.State == ConditionBounded {
+			severity = iam.SeverityHigh // WO-66@v2: a proved condition bound lowers only resource breadth.
 		}
 
 		result.Findings = append(result.Findings, iam.Finding{
 			ID:             iam.FindingWildcardPolicy,
-			Severity:       iam.SeverityCritical,
+			Severity:       severity,
 			ResourceType:   iam.ResourceIAMPolicy,
 			ResourceID:     policyARN,
 			ResourceName:   policyName,
 			Message:        fmt.Sprintf("Policy has wildcard %s permissions", wildcardType),
 			Recommendation: "Restrict policy to specific actions and resources following least-privilege principle",
 			Metadata: map[string]any{
-				"wildcard_action":   doc.HasWildcardAction(),
-				"wildcard_resource": doc.HasWildcardResource(),
-				"attachment_count":  awssdk.ToInt32(policy.AttachmentCount),
+				"wildcard_action":                       wildcardAction,
+				"wildcard_resource":                     wildcardResource,
+				"attachment_count":                      awssdk.ToInt32(policy.AttachmentCount),
+				"condition_boundedness":                 string(condition.State),             // WO-66@v2: retain decision evidence.
+				"condition_reason":                      condition.Reason,                    // WO-66@v2: explain preserved or lowered severity.
+				"resource_applicability":                string(resourceApplicability.State), // WO-65@v2: record catalog proof state.
+				"resource_applicability_reason":         resourceApplicability.Reason,        // WO-65@v2: explain neutralization decisions.
+				"resource_applicability_catalog_digest": resourceApplicabilityCatalogDigest,  // WO-65@v2: bind evidence to its pinned source.
 			},
 		})
 	}

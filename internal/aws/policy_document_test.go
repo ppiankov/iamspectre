@@ -510,6 +510,39 @@ func TestPolicyStatementHasRestrictiveTrustCondition(t *testing.T) {
 	}
 }
 
+// WO-66@v2: distinguish proved bounds from proved broad and unsupported condition semantics.
+func TestPolicyStatementAssessConditionBoundedness(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		wantState ConditionBoundednessState
+	}{
+		{"bounded scalar", `{"StringEquals":{"sts:ExternalId":"customer-123"}}`, ConditionBounded},
+		{"bounded list", `{"StringEquals":{"aws:SourceAccount":["123456789012","999999999999"]}}`, ConditionBounded},
+		{"wildcard", `{"StringEquals":{"sts:ExternalId":"*"}}`, ConditionNotBounded},
+		{"universal network", `{"IpAddress":{"aws:SourceIp":"0.0.0.0/0"}}`, ConditionNotBounded},
+		{"unsupported key", `{"StringEquals":{"aws:username":"alice"}}`, ConditionIndeterminate},
+		{"negated", `{"StringNotEquals":{"sts:ExternalId":"customer-123"}}`, ConditionIndeterminate},
+		{"variable", `{"StringEquals":{"sts:ExternalId":"${aws:username}"}}`, ConditionIndeterminate},
+		{"mixed", `{"StringEquals":{"sts:ExternalId":"customer-123","aws:username":"alice"}}`, ConditionIndeterminate},
+		{"invalid type", `{"StringEquals":{"sts:ExternalId":42}}`, ConditionIndeterminate},
+		{"absent", `null`, ConditionIndeterminate},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var condition any
+			if err := json.Unmarshal([]byte(tt.condition), &condition); err != nil {
+				t.Fatalf("unmarshal condition fixture: %v", err)
+			}
+			got := (PolicyStatement{Condition: condition}).AssessConditionBoundedness()
+			if got.State != tt.wantState || got.Reason == "" {
+				t.Fatalf("AssessConditionBoundedness() = %#v, want state %s with reason", got, tt.wantState)
+			}
+		})
+	}
+}
+
 // WO-40: match only action patterns that grant the AWS-principal assume-role operation.
 func TestPolicyStatementHasAssumeRoleAction(t *testing.T) {
 	tests := []struct {

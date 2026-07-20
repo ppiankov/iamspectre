@@ -268,28 +268,121 @@ func matchesAnyActionPattern(patterns StringOrSlice, action string) bool {
 	return false
 }
 
-// WO-19@v3: suppress trust findings only when every parsed condition element is understood and bounded.
-func (s PolicyStatement) HasRestrictiveTrustCondition() bool {
+// ConditionBoundednessState records what local policy-condition evidence proves.
+// WO-66@v2: unsupported semantics remain distinct from conditions proved not to bound access.
+type ConditionBoundednessState string
+
+// WO-66@v2: keep every condition result state provenance-bound.
+const (
+	ConditionBounded       ConditionBoundednessState = "BOUNDED"       // WO-66@v2: every condition element is supported and bounded.
+	ConditionNotBounded    ConditionBoundednessState = "NOT_BOUNDED"   // WO-66@v2: supported values are explicitly broad.
+	ConditionIndeterminate ConditionBoundednessState = "INDETERMINATE" // WO-66@v2: local semantics cannot prove either result.
+)
+
+// ConditionBoundednessAssessment carries the tri-state result and an operator-facing reason.
+// WO-66@v2: policy findings record why a condition did or did not affect breadth severity.
+type ConditionBoundednessAssessment struct {
+	State  ConditionBoundednessState
+	Reason string
+}
+
+// ResourceApplicabilityAssessmentState identifies whether the pinned catalog covers every relevant action.
+// WO-65@v2: unknown or pattern-based actions cannot neutralize observed resource breadth.
+type ResourceApplicabilityAssessmentState string
+
+// WO-65@v2: keep determinate and indeterminate catalog outcomes distinct.
+const (
+	ResourceApplicabilityDeterminate   ResourceApplicabilityAssessmentState = "DETERMINATE"
+	ResourceApplicabilityIndeterminate ResourceApplicabilityAssessmentState = "INDETERMINATE"
+)
+
+// ResourceApplicabilityAssessment summarizes catalog evidence for wildcard-resource statements.
+// WO-65@v2: AllNone is true only when every exact action has no supported resource type.
+type ResourceApplicabilityAssessment struct {
+	State   ResourceApplicabilityAssessmentState // WO-65@v2: distinguish catalog proof from uncertainty.
+	AllNone bool                                 // WO-65@v2: neutralize only unanimous no-resource evidence.
+	Reason  string                               // WO-65@v2: preserve why evidence was or was not conclusive.
+}
+
+// AssessConditionBoundedness evaluates exactly the condition families ratified for local analysis.
+// WO-66@v2: key presence is never enough to infer a permission boundary.
+func (s PolicyStatement) AssessConditionBoundedness() ConditionBoundednessAssessment {
 	operators, ok := s.Condition.(map[string]any)
 	if !ok || len(operators) == 0 {
-		return false
+		return ConditionBoundednessAssessment{State: ConditionIndeterminate, Reason: "condition absent or malformed"}
 	}
 
-	found := false
+	state := ConditionBoundednessState("")
 	for operator, rawKeys := range operators {
 		keys, ok := rawKeys.(map[string]any)
 		if !ok || len(keys) == 0 {
-			return false
+			return ConditionBoundednessAssessment{State: ConditionIndeterminate, Reason: "condition keys are malformed"}
 		}
 		for key, rawValues := range keys {
 			values, ok := conditionStrings(rawValues)
-			if !ok || !isRestrictiveTrustPair(operator, key, values) {
-				return false
+			if !ok {
+				return ConditionBoundednessAssessment{State: ConditionIndeterminate, Reason: "condition values are malformed"}
 			}
-			found = true
+			pairState := assessConditionPair(operator, key, values)
+			if pairState == ConditionIndeterminate || (state != "" && state != pairState) {
+				return ConditionBoundednessAssessment{State: ConditionIndeterminate, Reason: "condition semantics are mixed or unsupported"}
+			}
+			state = pairState
 		}
 	}
-	return found
+	if state == ConditionNotBounded {
+		return ConditionBoundednessAssessment{State: state, Reason: "supported condition values are broad"}
+	}
+	return ConditionBoundednessAssessment{State: state, Reason: "all supported condition values are bounded"}
+}
+
+// WO-66@v2: classify only supported operator/key pairs; unknown semantics fail open.
+func assessConditionPair(operator, key string, values []string) ConditionBoundednessState {
+	if len(values) == 0 {
+		return ConditionIndeterminate
+	}
+	if !isSupportedConditionPair(operator, key) {
+		return ConditionIndeterminate
+	}
+
+	bounded, broad := 0, 0
+	for _, value := range values {
+		if strings.Contains(value, "${") {
+			return ConditionIndeterminate
+		}
+		if isBroadConditionValue(value) {
+			broad++
+			continue
+		}
+		if !isRestrictiveTrustPair(operator, key, []string{value}) {
+			return ConditionIndeterminate
+		}
+		bounded++
+	}
+	if bounded > 0 && broad > 0 {
+		return ConditionIndeterminate
+	}
+	if broad > 0 {
+		return ConditionNotBounded
+	}
+	return ConditionBounded
+}
+
+// WO-66@v2: keep the supported taxonomy synchronized with the existing trust-condition validators.
+func isSupportedConditionPair(operator, key string) bool {
+	return (operator == "StringEquals" && (key == "sts:ExternalId" || key == "aws:PrincipalOrgID" || key == "aws:SourceAccount")) ||
+		((operator == "ArnEquals" || operator == "ArnLike") && key == "aws:SourceArn") ||
+		(operator == "IpAddress" && key == "aws:SourceIp")
+}
+
+// WO-66@v2: recognize only explicit wildcard or universal-network values as proved broad.
+func isBroadConditionValue(value string) bool {
+	return strings.ContainsAny(value, "*?") || value == "0.0.0.0/0" || value == "::/0"
+}
+
+// WO-19@v3: suppress trust findings only when every parsed condition element is understood and bounded.
+func (s PolicyStatement) HasRestrictiveTrustCondition() bool {
+	return s.AssessConditionBoundedness().State == ConditionBounded
 }
 
 // WO-40: recognize only actions whose IAM glob pattern grants sts:AssumeRole.
@@ -515,4 +608,84 @@ func (d *PolicyDocument) HasWildcardResource() bool {
 		}
 	}
 	return false
+}
+
+// AssessConditionBoundedness aggregates condition evidence from wildcard-resource Allow statements.
+// WO-66@v2: one unsupported or broad statement prevents a document-wide bounded conclusion.
+func (d *PolicyDocument) AssessConditionBoundedness() ConditionBoundednessAssessment {
+	found := false
+	state := ConditionBoundednessState("")
+	for _, statement := range d.Statement {
+		if statement.Effect != "Allow" || !statement.Resource.Contains("*") {
+			continue
+		}
+		found = true
+		assessment := statement.AssessConditionBoundedness()
+		if assessment.State == ConditionIndeterminate {
+			return assessment
+		}
+		if state != "" && state != assessment.State {
+			return ConditionBoundednessAssessment{State: ConditionIndeterminate, Reason: "wildcard-resource statements have mixed condition semantics"}
+		}
+		state = assessment.State
+	}
+	if !found {
+		return ConditionBoundednessAssessment{State: ConditionIndeterminate, Reason: "no wildcard-resource Allow statement"}
+	}
+	if state == ConditionNotBounded {
+		return ConditionBoundednessAssessment{State: state, Reason: "all wildcard-resource conditions are supported and broad"}
+	}
+	return ConditionBoundednessAssessment{State: state, Reason: "all wildcard-resource statements have supported bounds"}
+}
+
+// AssessResourceApplicability checks exact actions on every wildcard-resource Allow statement.
+// WO-65@v2: one unsupported action form or catalog miss preserves the finding.
+func (d *PolicyDocument) AssessResourceApplicability() ResourceApplicabilityAssessment {
+	found := false
+	allNone := true
+	for _, statement := range d.Statement {
+		if statement.Effect != "Allow" || !statement.Resource.Contains("*") {
+			continue
+		}
+		found = true
+		if len(statement.NotResource) > 0 {
+			return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "Resource and NotResource are both present"} // WO-65@v2: complementary resource forms cannot prove neutralization.
+		}
+		actionPresent, actionValid := statement.actionForm()
+		notActionPresent, _ := statement.notActionForm()
+		if !actionPresent || !actionValid || notActionPresent || len(statement.Action) == 0 {
+			return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action form is unsupported"}
+		}
+		for _, action := range statement.Action {
+			if strings.ContainsAny(action, "*?") || strings.Contains(action, "${") {
+				return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action requires expansion"}
+			}
+			applicability, ok := lookupResourceApplicability(action)
+			if !ok {
+				return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action is absent from pinned catalog"}
+			}
+			switch applicability {
+			case ResourceApplicabilityNone:
+				// WO-65@v2: continue only on the exact value proving Resource:* is mandatory.
+			case ResourceApplicabilitySupported:
+				allNone = false
+			default:
+				return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "catalog applicability value is invalid"} // WO-65@v2: corrupt evidence cannot neutralize a finding.
+			}
+		}
+	}
+	if !found {
+		return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "no wildcard-resource Allow statement"}
+	}
+	return ResourceApplicabilityAssessment{State: ResourceApplicabilityDeterminate, AllNone: allNone, Reason: "all exact actions are cataloged"}
+}
+
+// WO-65@v2: IAM action matching is ASCII case-insensitive while generated keys retain AWS spelling.
+func lookupResourceApplicability(action string) (ResourceApplicability, bool) {
+	for catalogAction, applicability := range resourceApplicabilityCatalog {
+		if strings.EqualFold(catalogAction, action) {
+			return applicability, true
+		}
+	}
+	return "", false
 }

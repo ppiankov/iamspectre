@@ -47,6 +47,7 @@ func TestRoleScanner_UnusedRole(t *testing.T) {
 	}
 }
 
+// WO-54@v3: creation age cannot substitute for unavailable RoleLastUsed evidence.
 func TestRoleScanner_NeverUsedRole(t *testing.T) {
 	oldCreateDate := time.Now().UTC().AddDate(-1, 0, 0)
 	mock := &mockIAM{
@@ -67,12 +68,12 @@ func TestRoleScanner_NeverUsedRole(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	found := findFinding(result.Findings, iam.FindingUnusedRole)
-	if found == nil {
-		t.Fatal("expected UNUSED_ROLE finding for never-used role")
+	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
+		t.Fatal("missing RoleLastUsed evidence must not emit UNUSED_ROLE")
 	}
-	if found.Metadata["never_used"] != true {
-		t.Fatal("expected never_used metadata")
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "never-used") ||
+		!strings.Contains(result.Errors[0], "RoleLastUsed evidence is unavailable") {
+		t.Fatalf("errors = %#v, want role-qualified evidence error", result.Errors)
 	}
 }
 
@@ -243,12 +244,11 @@ func TestRoleScanner_ServiceLinkedRoleIncluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	finding := findFinding(result.Findings, iam.FindingUnusedRole)
-	if finding == nil || finding.Severity != iam.SeverityLow {
-		t.Fatalf("service-linked finding = %#v, want low UNUSED_ROLE", finding)
+	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
+		t.Fatal("missing RoleLastUsed evidence must not emit UNUSED_ROLE")
 	}
-	if !strings.Contains(finding.Recommendation, "owning AWS service") {
-		t.Fatalf("recommendation = %q", finding.Recommendation)
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "AWSServiceRoleForExample") {
+		t.Fatalf("errors = %#v, want role-qualified evidence error", result.Errors)
 	}
 }
 
@@ -275,6 +275,7 @@ func TestRoleScanner_ServiceLinkedRoleStillChecksTrust(t *testing.T) {
 }
 
 // WO-50: missing creation evidence cannot justify a fabricated unused-role age.
+// WO-54@v3: missing RoleLastUsed evidence is independent of creation evidence.
 func TestRoleScanner_MissingCreateDate(t *testing.T) {
 	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}}`)
 	stale := time.Now().UTC().AddDate(0, 0, -120)
@@ -325,22 +326,23 @@ func TestRoleScanner_IdentityCenterReservedRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	finding := findFinding(result.Findings, iam.FindingUnusedRole)
-	if finding == nil || finding.Severity != iam.SeverityLow {
-		t.Fatalf("Identity Center finding = %#v, want low UNUSED_ROLE", finding)
+	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
+		t.Fatal("missing RoleLastUsed evidence must not emit UNUSED_ROLE")
 	}
-	if !strings.Contains(finding.Recommendation, "IAM Identity Center") {
-		t.Fatalf("recommendation = %q", finding.Recommendation)
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "AWSReservedSSO") {
+		t.Fatalf("errors = %#v, want role-qualified evidence error", result.Errors)
 	}
 }
 
 // WO-46: malformed trust documents must be present in reportable scan errors.
 func TestRoleScanner_TrustPolicyParseError(t *testing.T) {
+	stale := time.Now().UTC().AddDate(0, 0, -120)
 	mock := &mockIAM{roles: []iamtypes.Role{{
 		RoleName:                 awssdk.String("bad-trust"),
 		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/bad-trust"),
 		Path:                     awssdk.String("/"),
-		CreateDate:               awssdk.Time(time.Now().UTC()),
+		CreateDate:               awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)),
+		RoleLastUsed:             &iamtypes.RoleLastUsed{LastUsedDate: &stale},
 		AssumeRolePolicyDocument: awssdk.String(url.QueryEscape(`{"Statement":42}`)),
 	}}}
 	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
@@ -349,6 +351,79 @@ func TestRoleScanner_TrustPolicyParseError(t *testing.T) {
 	}
 	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "bad-trust") {
 		t.Fatalf("errors = %#v, want one role-qualified parse error", result.Errors)
+	}
+	if findFinding(result.Findings, iam.FindingUnusedRole) == nil {
+		t.Fatal("malformed trust must not suppress a known stale finding")
+	}
+}
+
+// WO-54@v3: recognize only determinate OIDC federated grants for annotation.
+func TestClassifyWebIdentityTrust(t *testing.T) {
+	tests := []struct {
+		name, statement string
+		want            bool
+	}{
+		{name: "exact", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}`, want: true},
+		{name: "mixed case action", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"STS:assumerolewithwebidentity"}`, want: true},
+		{name: "glob", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWith*"}`, want: true},
+		{name: "array", statement: `{"Effect":"Allow","Principal":{"Federated":["arn:aws:iam::123456789012:saml-provider/example","arn:aws:iam::123456789012:oidc-provider/issuer.example"]},"Action":["sts:TagSession","sts:AssumeRoleWithWebIdentity"]}`, want: true},
+		{name: "deny", statement: `{"Effect":"Deny","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}`},
+		{name: "saml", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:saml-provider/example"},"Action":"sts:AssumeRoleWithWebIdentity"}`},
+		{name: "service", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":"sts:AssumeRoleWithWebIdentity"}`},
+		{name: "unrelated action", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRole"}`},
+		{name: "non oidc resource", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:role/example"},"Action":"sts:AssumeRoleWithWebIdentity"}`},
+		{name: "not action", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"NotAction":"sts:AssumeRole"}`},
+		{name: "variable", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:${Operation}"}`},
+		{name: "malformed action", statement: `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":42}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := url.QueryEscape(`{"Statement":` + tt.statement + `}`)
+			if got := classifyWebIdentityTrust(&encoded); got != tt.want {
+				t.Fatalf("classifyWebIdentityTrust() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-54@v3: web-identity trust annotates known stale evidence without changing its presentation.
+func TestRoleScanner_WebIdentityUnusedRolePolicy(t *testing.T) {
+	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}}`)
+	stale := time.Now().UTC().AddDate(0, 0, -120)
+	roles := []iamtypes.Role{{RoleName: awssdk.String("stale-irsa"), Arn: awssdk.String("arn:aws:iam::123456789012:role/stale-irsa"), CreateDate: awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale}, AssumeRolePolicyDocument: &trust}}
+
+	result, err := NewRoleScanner(&mockIAM{roles: roles}, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("default scan: %v", err)
+	}
+	finding := findFinding(result.Findings, iam.FindingUnusedRole)
+	if finding == nil || finding.Severity != iam.SeverityMedium {
+		t.Fatalf("finding = %#v, want unchanged medium UNUSED_ROLE", finding)
+	}
+	if finding.Message != "Role not assumed in 120 days" || finding.Recommendation != customerManagedRoleGuidance {
+		t.Fatalf("presentation changed: %#v", finding)
+	}
+	if finding.Metadata["trust_mechanism"] != "web_identity" {
+		t.Fatalf("metadata = %#v", finding.Metadata)
+	}
+}
+
+// WO-54@v3: web-identity and ordinary roles share the same missing-evidence boundary.
+func TestRoleScanner_WebIdentityMissingUsageEvidence(t *testing.T) {
+	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}}`)
+	roles := []iamtypes.Role{
+		{RoleName: awssdk.String("unknown-irsa"), Arn: awssdk.String("arn:aws:iam::123456789012:role/unknown-irsa"), CreateDate: awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0)), AssumeRolePolicyDocument: &trust},
+		{RoleName: awssdk.String("unknown-ordinary"), Arn: awssdk.String("arn:aws:iam::123456789012:role/unknown-ordinary"), CreateDate: awssdk.Time(time.Now().UTC().AddDate(-2, 0, 0))},
+	}
+	result, err := NewRoleScanner(&mockIAM{roles: roles}, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
+		t.Fatal("missing usage evidence must not emit UNUSED_ROLE")
+	}
+	if len(result.Errors) != 2 || !strings.Contains(result.Errors[0], "unknown-irsa") || !strings.Contains(result.Errors[1], "unknown-ordinary") {
+		t.Fatalf("errors = %#v, want one role-qualified error per role", result.Errors)
 	}
 }
 
