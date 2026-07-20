@@ -78,7 +78,7 @@ func TestFinding_AssessmentJSON(t *testing.T) {
 	}
 }
 
-// WO-70@v3: coverage observations have a stable ScanResult JSON round trip.
+// WO-70@v4: coverage observations have a stable ScanResult JSON round trip.
 func TestScanResult_JSON(t *testing.T) {
 	r := ScanResult{
 		Findings: []Finding{

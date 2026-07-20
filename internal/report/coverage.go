@@ -9,6 +9,7 @@ import (
 
 type coverageKey struct {
 	capability string
+	cause      string
 	scope      string
 }
 
@@ -17,18 +18,20 @@ type coverageAccumulator struct {
 	counts map[iam.FindingID]int
 }
 
-// WO-70@v3: BuildCoverageManifest deterministically merges raw evidence gaps outside severity filtering.
+// WO-70@v4: BuildCoverageManifest deterministically merges raw evidence gaps outside severity filtering.
 func BuildCoverageManifest(observations []iam.CoverageGapObservation) CoverageManifest {
 	merged := make(map[coverageKey]*coverageAccumulator)
 	for _, observation := range observations {
-		if observation.Capability == "" || observation.Scope == "" || observation.FindingID == "" {
+		if observation.Capability == "" || observation.Cause == "" || observation.Scope == "" || observation.FindingID == "" {
 			continue
 		}
-		key := coverageKey{capability: observation.Capability, scope: observation.Scope}
+		key := coverageKey{capability: observation.Capability, cause: observation.Cause, scope: observation.Scope}
 		accumulator := merged[key]
 		if accumulator == nil {
 			accumulator = &coverageAccumulator{
-				gap:    CoverageGap{Capability: observation.Capability, Scope: observation.Scope},
+				gap: CoverageGap{
+					Capability: observation.Capability, Cause: observation.Cause, Scope: observation.Scope,
+				},
 				counts: make(map[iam.FindingID]int),
 			}
 			merged[key] = accumulator
@@ -61,18 +64,20 @@ func BuildCoverageManifest(observations []iam.CoverageGapObservation) CoverageMa
 		if manifest.Gaps[left].Capability != manifest.Gaps[right].Capability {
 			return manifest.Gaps[left].Capability < manifest.Gaps[right].Capability
 		}
-		return manifest.Gaps[left].Scope < manifest.Gaps[right].Scope
+		if manifest.Gaps[left].Scope != manifest.Gaps[right].Scope {
+			return manifest.Gaps[left].Scope < manifest.Gaps[right].Scope
+		}
+		return manifest.Gaps[left].Cause < manifest.Gaps[right].Cause
 	})
 	manifest.UniqueMissingCapabilities = len(capabilities)
 	return manifest
 }
 
-// WO-70@v3: merge counts and bounded evidence using order-independent rules.
+// WO-70@v4: merge counts and bounded evidence using order-independent rules.
 func mergeCoverageObservation(accumulator *coverageAccumulator, observation iam.CoverageGapObservation) {
 	accumulator.counts[observation.FindingID] += nonNegative(observation.AffectedCount)
 	accumulator.gap.EvaluableCount += nonNegative(observation.EvaluableCount)
 	accumulator.gap.TotalCount += nonNegative(observation.TotalCount)
-	accumulator.gap.Cause = stableNonEmpty(accumulator.gap.Cause, observation.Cause)
 	accumulator.gap.ObservationWindow = stableNonEmpty(accumulator.gap.ObservationWindow, observation.ObservationWindow)
 	accumulator.gap.FeatureStage = stableNonEmpty(accumulator.gap.FeatureStage, observation.FeatureStage)
 	accumulator.gap.OldestEvidence = earlierTime(accumulator.gap.OldestEvidence, observation.OldestEvidence)
@@ -81,7 +86,7 @@ func mergeCoverageObservation(accumulator *coverageAccumulator, observation iam.
 	}
 }
 
-// WO-70@v3: invalid negative counts cannot reduce independently reported coverage totals.
+// WO-70@v4: invalid negative counts cannot reduce independently reported coverage totals.
 func nonNegative(value int) int {
 	if value < 0 {
 		return 0
@@ -89,7 +94,7 @@ func nonNegative(value int) int {
 	return value
 }
 
-// WO-70@v3: conflicting descriptive values converge independently of scanner order.
+// WO-70@v4: conflicting descriptive values converge independently of scanner order.
 func stableNonEmpty(current, candidate string) string {
 	if current == "" || candidate != "" && candidate < current {
 		return candidate
@@ -97,7 +102,7 @@ func stableNonEmpty(current, candidate string) string {
 	return current
 }
 
-// WO-70@v3: the oldest known evidence is the conservative freshness boundary.
+// WO-70@v4: the oldest known evidence is the conservative freshness boundary.
 func earlierTime(current, candidate *time.Time) *time.Time {
 	if candidate == nil {
 		return current

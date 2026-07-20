@@ -8,7 +8,7 @@ import (
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
 
-// WO-70@v3: pin order-independent deduplication, counts, freshness, and consequence merging.
+// WO-70@v4: pin order-independent causal deduplication, counts, freshness, and consequence merging.
 func TestBuildCoverageManifest(t *testing.T) {
 	newer := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
 	older := newer.Add(-24 * time.Hour)
@@ -20,22 +20,28 @@ func TestBuildCoverageManifest(t *testing.T) {
 	}
 
 	manifest := BuildCoverageManifest(observations)
-	if len(manifest.Gaps) != 1 || manifest.UniqueMissingCapabilities != 1 {
+	if len(manifest.Gaps) != 2 || manifest.UniqueMissingCapabilities != 1 {
 		t.Fatalf("manifest identity = %#v", manifest)
 	}
-	gap := manifest.Gaps[0]
-	wantAffected := []AffectedFindingClass{{FindingID: iam.FindingStaleSP, Count: 5}, {FindingID: iam.FindingUnusedRole, Count: 1}}
-	if !reflect.DeepEqual(gap.AffectedFindings, wantAffected) {
-		t.Fatalf("affected findings = %#v, want %#v", gap.AffectedFindings, wantAffected)
+	missingRow, unavailable := manifest.Gaps[0], manifest.Gaps[1]
+	if missingRow.Cause != "missing row" || unavailable.Cause != "report unavailable" {
+		t.Fatalf("causal gaps = %#v", manifest.Gaps)
 	}
-	if gap.EvaluableCount != 1 || gap.TotalCount != 7 || manifest.EvaluableOpportunities != 1 || manifest.TotalOpportunities != 7 {
+	if want := []AffectedFindingClass{{FindingID: iam.FindingStaleSP, Count: 3}}; !reflect.DeepEqual(missingRow.AffectedFindings, want) {
+		t.Fatalf("missing-row findings = %#v, want %#v", missingRow.AffectedFindings, want)
+	}
+	wantUnavailable := []AffectedFindingClass{{FindingID: iam.FindingStaleSP, Count: 2}, {FindingID: iam.FindingUnusedRole, Count: 1}}
+	if !reflect.DeepEqual(unavailable.AffectedFindings, wantUnavailable) {
+		t.Fatalf("unavailable findings = %#v, want %#v", unavailable.AffectedFindings, wantUnavailable)
+	}
+	if missingRow.EvaluableCount != 1 || missingRow.TotalCount != 4 || unavailable.TotalCount != 3 || manifest.EvaluableOpportunities != 1 || manifest.TotalOpportunities != 7 {
 		t.Fatalf("coverage counts = %#v", manifest)
 	}
-	if gap.OldestEvidence == nil || !gap.OldestEvidence.Equal(older) || manifest.OldestEvidence == nil || !manifest.OldestEvidence.Equal(older) {
-		t.Fatalf("oldest evidence = gap:%v manifest:%v", gap.OldestEvidence, manifest.OldestEvidence)
+	if unavailable.OldestEvidence == nil || !unavailable.OldestEvidence.Equal(older) || manifest.OldestEvidence == nil || !manifest.OldestEvidence.Equal(older) {
+		t.Fatalf("oldest evidence = gap:%v manifest:%v", unavailable.OldestEvidence, manifest.OldestEvidence)
 	}
-	if gap.MaxConsequence != iam.SeverityHigh {
-		t.Fatalf("max consequence = %s", gap.MaxConsequence)
+	if unavailable.MaxConsequence != iam.SeverityHigh {
+		t.Fatalf("max consequence = %s", unavailable.MaxConsequence)
 	}
 
 	reversed := append([]iam.CoverageGapObservation(nil), observations...)
@@ -47,9 +53,12 @@ func TestBuildCoverageManifest(t *testing.T) {
 	}
 }
 
-// WO-70@v3: malformed and empty input remain zero-value safe.
+// WO-70@v4: malformed and empty input remain zero-value safe.
 func TestBuildCoverageManifestEmpty(t *testing.T) {
-	manifest := BuildCoverageManifest([]iam.CoverageGapObservation{{Capability: "missing-fields"}})
+	manifest := BuildCoverageManifest([]iam.CoverageGapObservation{
+		{Capability: "missing-fields"},
+		{Capability: "azure_activity", Scope: "tenant:a", FindingID: iam.FindingStaleSP},
+	})
 	if len(manifest.Gaps) != 0 || manifest.TotalOpportunities != 0 {
 		t.Fatalf("empty manifest = %#v", manifest)
 	}

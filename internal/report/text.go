@@ -89,7 +89,7 @@ func (r *TextReporter) Generate(data Data) error {
 	return w.err
 }
 
-// WO-70@v3: render coverage gaps as a second plane, never as finding rows.
+// WO-70@v4: render coverage gaps as a second plane, never as finding rows.
 func printTextCoverage(w *errWriter, manifest CoverageManifest) {
 	if len(manifest.Gaps) == 0 {
 		return

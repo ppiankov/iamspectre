@@ -35,7 +35,7 @@ func RunScanners(ctx context.Context, scanners []Scanner, cfg ScanConfig) (*Scan
 			mu.Lock()
 			combined.Findings = append(combined.Findings, result.Findings...)
 			combined.Errors = append(combined.Errors, result.Errors...)
-			combined.CoverageGaps = append(combined.CoverageGaps, result.CoverageGaps...) // WO-70@v3: preserve the independent coverage plane.
+			combined.CoverageGaps = append(combined.CoverageGaps, result.CoverageGaps...) // WO-70@v4: preserve the independent coverage plane.
 			combined.PrincipalsScanned += result.PrincipalsScanned
 			mu.Unlock()
 			return nil

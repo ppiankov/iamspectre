@@ -17,7 +17,7 @@ type sarifRun struct {
 	Tool        sarifTool         `json:"tool"`
 	Results     []sarifResult     `json:"results"`
 	Invocations []sarifInvocation `json:"invocations,omitempty"` // WO-32@v2: expose partial scanner failures to SARIF consumers
-	Properties  map[string]any    `json:"properties,omitempty"`  // WO-70@v3: coverage is run evidence, not a synthetic result.
+	Properties  map[string]any    `json:"properties,omitempty"`  // WO-70@v4: coverage is run evidence, not a synthetic result.
 }
 
 // WO-32@v2: represent a failed scan execution without hiding the meaningful false value.
@@ -138,7 +138,7 @@ func (r *SARIFReporter) Generate(data Data) error {
 	return enc.Encode(report)
 }
 
-// WO-70@v3: omit an empty manifest while preserving the typed plane when present.
+// WO-70@v4: omit an empty manifest while preserving the typed plane when present.
 func sarifCoverageProperties(manifest CoverageManifest) map[string]any {
 	if len(manifest.Gaps) == 0 {
 		return nil

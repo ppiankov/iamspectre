@@ -163,15 +163,15 @@ type Finding struct {
 	EvaluatedLayers map[AuthorizationLayer]LayerStatus `json:"evaluated_layers,omitempty"` // WO-20@v3: expose complete authorization-layer coverage.
 }
 
-// WO-70@v3: ScanResult keeps actionable findings, diagnostics, and coverage observations distinct.
+// WO-70@v4: ScanResult keeps actionable findings, diagnostics, and coverage observations distinct.
 type ScanResult struct {
 	Findings          []Finding                `json:"findings"`
 	Errors            []string                 `json:"errors,omitempty"`
-	CoverageGaps      []CoverageGapObservation `json:"coverage_gaps,omitempty"` // WO-70@v3: keep missing evidence separate from actionable findings.
+	CoverageGaps      []CoverageGapObservation `json:"coverage_gaps,omitempty"` // WO-70@v4: keep missing evidence separate from actionable findings.
 	PrincipalsScanned int                      `json:"principals_scanned"`
 }
 
-// WO-70@v3: CoverageGapObservation records one unevaluable check without fabricating a finding.
+// WO-70@v4: CoverageGapObservation records one unevaluable check without fabricating a finding.
 type CoverageGapObservation struct {
 	Capability        string     `json:"capability"`
 	Cause             string     `json:"cause"`

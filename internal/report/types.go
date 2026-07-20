@@ -23,10 +23,10 @@ type Data struct {
 	Findings  []iam.Finding    `json:"findings"`
 	Summary   analyzer.Summary `json:"summary"`
 	Errors    []string         `json:"errors,omitempty"`
-	Coverage  CoverageManifest `json:"coverage_manifest,omitempty"` // WO-70@v3: surface unevaluable checks outside the finding plane.
+	Coverage  CoverageManifest `json:"coverage_manifest,omitempty"` // WO-70@v4: surface unevaluable checks outside the finding plane.
 }
 
-// WO-70@v3: CoverageManifest summarizes missing evidence without inventing alerts.
+// WO-70@v4: CoverageManifest summarizes missing evidence without inventing alerts.
 type CoverageManifest struct {
 	Gaps                      []CoverageGap `json:"gaps,omitempty"`
 	EvaluableOpportunities    int           `json:"evaluable_opportunities"`
@@ -35,7 +35,7 @@ type CoverageManifest struct {
 	OldestEvidence            *time.Time    `json:"oldest_evidence,omitempty"`
 }
 
-// WO-70@v3: CoverageGap is one deterministically merged causal gap and scope.
+// WO-70@v4: CoverageGap is one deterministically merged causal gap and scope.
 type CoverageGap struct {
 	Capability        string                 `json:"capability"`
 	Cause             string                 `json:"cause"`
@@ -49,7 +49,7 @@ type CoverageGap struct {
 	MaxConsequence    iam.Severity           `json:"max_consequence"`
 }
 
-// WO-70@v3: AffectedFindingClass retains the unresolved class count explicitly.
+// WO-70@v4: AffectedFindingClass retains the unresolved class count explicitly.
 type AffectedFindingClass struct {
 	FindingID iam.FindingID `json:"finding_id"`
 	Count     int           `json:"count"`
