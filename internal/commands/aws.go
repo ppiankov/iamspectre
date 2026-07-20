@@ -12,7 +12,8 @@ import (
 
 type awsScanFlags struct {
 	commonScanFlags
-	profile string
+	profile                   string
+	includeServiceLinkedRoles bool // WO-44@v2: opt in to otherwise suppressed AWS-owned-role noise.
 }
 
 var awsFlags awsScanFlags
@@ -37,9 +38,12 @@ func init() {
 func registerAWSFlags(cmd *cobra.Command, flags *awsScanFlags) {
 	registerCommonScanFlags(cmd, &flags.commonScanFlags)
 	cmd.Flags().StringVar(&flags.profile, "profile", "", "AWS profile name")
+	cmd.Flags().BoolVar(&flags.includeServiceLinkedRoles, "include-service-linked-roles", false, "Include unused AWS service-linked roles")
 }
 
+// WO-44@v2: resolve the AWS-only service-linked role policy before scanner construction.
 func runAWS(cmd *cobra.Command, _ []string) error {
+	applyAWSConfigDefaults(cmd)
 	// WO-17: resolve every shared runtime option once before provider setup.
 	common := resolveCommonOptions(cmd, &awsFlags.commonScanFlags)
 
@@ -67,6 +71,7 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 
 	// Build scan config
 	scanCfg := common.scanConfig
+	scanCfg.IncludeServiceLinkedRoles = awsFlags.includeServiceLinkedRoles // WO-44@v2: carry the AWS-only operator choice.
 
 	// Run AWS IAM scan
 	scanner := awsscanner.NewAWSScanner(client, scanCfg)
@@ -87,6 +92,9 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 func applyAWSConfigDefaults(cmd *cobra.Command) {
 	// WO-17: retain a policy-free compatibility wrapper around the shared resolver.
 	applyCommonConfigDefaults(cmd, &awsFlags.commonScanFlags)
+	if !cmd.Flags().Changed("include-service-linked-roles") {
+		awsFlags.includeServiceLinkedRoles = cfg.IncludeServiceLinkedRoles // WO-44@v2: explicit CLI false must beat YAML true.
+	}
 }
 
 // WO-12@v2: construct scan contexts from the already-resolved timeout.

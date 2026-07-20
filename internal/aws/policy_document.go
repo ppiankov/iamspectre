@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -18,9 +19,47 @@ var (
 )
 
 // PolicyDocument represents an AWS IAM policy document.
+// WO-41@v2: accept both AWS-defined Statement container shapes.
 type PolicyDocument struct {
-	Version   string            `json:"Version"`
-	Statement []PolicyStatement `json:"Statement"`
+	Version   string           `json:"Version"`
+	Statement PolicyStatements `json:"Statement"`
+}
+
+// PolicyStatements accepts both container shapes allowed by AWS policy syntax.
+// WO-45: preserve policy-analysis coverage across accepted shapes and visible failures.
+// WO-41@v2: normalize a single statement object without changing downstream iteration.
+type PolicyStatements []PolicyStatement
+
+// UnmarshalJSON preserves the legacy array/null contract and adds object-form support.
+// WO-41@v2: reject scalar containers while delegating statement fields to encoding/json.
+func (s *PolicyStatements) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		*s = nil
+		return nil
+	}
+	if len(trimmed) == 0 {
+		return fmt.Errorf("unmarshal policy statements: empty JSON value")
+	}
+
+	if trimmed[0] == '[' {
+		var statements []PolicyStatement
+		if err := json.Unmarshal(trimmed, &statements); err != nil {
+			return fmt.Errorf("unmarshal policy statement array: %w", err)
+		}
+		*s = statements
+		return nil
+	}
+
+	if trimmed[0] != '{' {
+		return fmt.Errorf("unmarshal policy statements: expected object or array")
+	}
+	var statement PolicyStatement
+	if err := json.Unmarshal(trimmed, &statement); err != nil {
+		return fmt.Errorf("unmarshal policy statements: %w", err)
+	}
+	*s = PolicyStatements{statement}
+	return nil
 }
 
 // PolicyStatement represents a single statement in a policy document.

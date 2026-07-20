@@ -3,9 +3,11 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ppiankov/iamspectre/internal/analyzer"
 	"github.com/ppiankov/iamspectre/internal/iam"
@@ -133,6 +135,97 @@ func TestTextReporter_TimestampUsesUTC(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Scanned at: 2026-02-25T12:00:00Z") {
 		t.Fatal("expected timestamp normalized to UTC")
+	}
+}
+
+// WO-42@v2: equivalent finding sets and severity maps must produce identical text.
+func TestTextReporter_DeterministicSeverityOrder(t *testing.T) {
+	findings := []iam.Finding{
+		{ID: "Z_LOW", Severity: iam.SeverityLow, ResourceType: iam.ResourceIAMRole, ResourceID: "z"},
+		{ID: "B_HIGH", Severity: iam.SeverityHigh, ResourceType: iam.ResourceIAMRole, ResourceID: "b"},
+		{ID: "A_HIGH", Severity: iam.SeverityHigh, ResourceType: iam.ResourceIAMRole, ResourceID: "a"},
+		{ID: "C_CRIT", Severity: iam.SeverityCritical, ResourceType: iam.ResourceIAMRole, ResourceID: "c"},
+		{ID: "M_MED", Severity: iam.SeverityMedium, ResourceType: iam.ResourceIAMRole, ResourceID: "m"},
+		{ID: "ALPHA_UNKNOWN", Severity: iam.Severity("alpha"), ResourceType: iam.ResourceIAMRole, ResourceID: "a"},
+		{ID: "OMEGA_UNKNOWN", Severity: iam.Severity("omega"), ResourceType: iam.ResourceIAMRole, ResourceID: "o"},
+	}
+	render := func(input []iam.Finding, bySeverity map[string]int) string {
+		t.Helper()
+		data := testData()
+		data.Findings = input
+		data.Summary.TotalFindings = len(input)
+		data.Summary.BySeverity = bySeverity
+		before := append([]iam.Finding(nil), input...)
+		var buf bytes.Buffer
+		if err := (&TextReporter{Writer: &buf}).Generate(data); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if !reflect.DeepEqual(input, before) {
+			t.Fatal("Generate mutated caller-owned findings")
+		}
+		return buf.String()
+	}
+
+	reversed := append([]iam.Finding(nil), findings...)
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	first := render(findings, map[string]int{"omega": 1, "low": 1, "medium": 1, "alpha": 1, "high": 2, "critical": 1})
+	second := render(reversed, map[string]int{"high": 2, "alpha": 1, "critical": 1, "omega": 1, "low": 1, "medium": 1})
+	if first != second {
+		t.Fatal("equivalent inputs produced different text reports")
+	}
+	for _, pair := range [][2]string{{"C_CRIT", "A_HIGH"}, {"A_HIGH", "B_HIGH"}, {"B_HIGH", "M_MED"}, {"M_MED", "Z_LOW"}, {"Z_LOW", "ALPHA_UNKNOWN"}, {"ALPHA_UNKNOWN", "OMEGA_UNKNOWN"}} {
+		if strings.Index(first, pair[0]) >= strings.Index(first, pair[1]) {
+			t.Fatalf("expected %s before %s", pair[0], pair[1])
+		}
+	}
+	if !strings.Contains(first, "By severity: critical=1 high=2 medium=1 low=1 alpha=1 omega=1") {
+		t.Fatal("expected canonical severity summary order")
+	}
+}
+
+// WO-43@v2: long same-prefix resource identifiers must remain complete and distinct.
+func TestTextReporter_PreservesFullResourceIDs(t *testing.T) {
+	data := testData()
+	first := "arn:aws:iam::123456789012:role/team/very-long-shared-prefix/production-reader"
+	second := "arn:aws:iam::123456789012:role/team/very-long-shared-prefix/production-writer"
+	data.Findings = []iam.Finding{
+		{ID: iam.FindingUnusedRole, Severity: iam.SeverityMedium, ResourceType: iam.ResourceIAMRole, ResourceID: first},
+		{ID: iam.FindingUnusedRole, Severity: iam.SeverityMedium, ResourceType: iam.ResourceIAMRole, ResourceID: second},
+	}
+	data.Summary.TotalFindings = 2
+	var buf bytes.Buffer
+	if err := (&TextReporter{Writer: &buf}).Generate(data); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, first) || !strings.Contains(output, second) {
+		t.Fatal("expected complete distinct resource IDs")
+	}
+}
+
+// WO-48: bounded text must never split a UTF-8 code point.
+func TestTextReporter_TruncatesByRune(t *testing.T) {
+	message := strings.Repeat("界", 60)
+	data := testData()
+	data.Findings[0].Message = message
+	data.Findings[0].Recommendation = message
+	var buf bytes.Buffer
+	if err := (&TextReporter{Writer: &buf}).Generate(data); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !utf8.ValidString(buf.String()) {
+		t.Fatal("text report contains invalid UTF-8")
+	}
+	if got, want := truncate(message, 50), strings.Repeat("界", 47)+"..."; got != want {
+		t.Fatalf("truncate = %q, want %q", got, want)
+	}
+	if got := truncate("short", 50); got != "short" {
+		t.Fatalf("short string changed: %q", got)
+	}
+	if got, want := truncate(strings.Repeat("a", 60), 50), strings.Repeat("a", 47)+"..."; got != want {
+		t.Fatalf("ASCII truncate = %q, want %q", got, want)
 	}
 }
 

@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"net/url"
+	"strings"
 	"testing"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -132,6 +133,61 @@ func TestPolicyScanner_SafePolicy(t *testing.T) {
 
 	if len(result.Findings) != 0 {
 		t.Fatalf("expected no findings for safe policy, got %d", len(result.Findings))
+	}
+}
+
+// WO-46: malformed managed policies must be present in reportable scan errors.
+func TestPolicyScanner_ParseError(t *testing.T) {
+	mock := &mockIAM{
+		policies: []iamtypes.Policy{
+			{
+				PolicyName:       awssdk.String("bad-policy"),
+				Arn:              awssdk.String("arn:aws:iam::123456789012:policy/bad-policy"),
+				AttachmentCount:  awssdk.Int32(1),
+				DefaultVersionId: awssdk.String("v1"),
+			},
+			{
+				PolicyName:      awssdk.String("later-policy"),
+				Arn:             awssdk.String("arn:aws:iam::123456789012:policy/later-policy"),
+				AttachmentCount: awssdk.Int32(0),
+			},
+		},
+		policyVersion: &iamsvc.GetPolicyVersionOutput{PolicyVersion: &iamtypes.PolicyVersion{
+			Document: awssdk.String(url.QueryEscape(`{"Statement":42}`)),
+		}},
+	}
+	result, err := NewPolicyScanner(mock).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "bad-policy") ||
+		!strings.Contains(result.Errors[0], "expected object or array") {
+		t.Fatalf("errors = %#v, want one policy-qualified parse error", result.Errors)
+	}
+	if findFinding(result.Findings, iam.FindingUnattachedPolicy) == nil {
+		t.Fatal("expected scanning to continue after malformed policy")
+	}
+}
+
+// WO-41@v2: valid object-form policies reach statement-level detection.
+// WO-46: accepted policy shapes must not fabricate parse errors.
+func TestPolicyScanner_SingleStatementObject(t *testing.T) {
+	doc := `{"Statement":{"Effect":"Allow","Action":"*","Resource":"*"}}`
+	mock := &mockIAM{
+		policies: []iamtypes.Policy{{
+			PolicyName: awssdk.String("object-policy"), Arn: awssdk.String("arn:aws:iam::123456789012:policy/object-policy"),
+			AttachmentCount: awssdk.Int32(1), DefaultVersionId: awssdk.String("v1"),
+		}},
+		policyVersion: &iamsvc.GetPolicyVersionOutput{PolicyVersion: &iamtypes.PolicyVersion{
+			Document: awssdk.String(url.QueryEscape(doc)),
+		}},
+	}
+	result, err := NewPolicyScanner(mock).Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Errors) != 0 || findFinding(result.Findings, iam.FindingWildcardPolicy) == nil {
+		t.Fatalf("result = %#v, want wildcard finding without errors", result)
 	}
 }
 

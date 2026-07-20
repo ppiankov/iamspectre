@@ -143,6 +143,13 @@ func TestIsExcluded(t *testing.T) {
 	}
 }
 
+// WO-44@v2: the zero value preserves default service-linked UNUSED_ROLE suppression.
+func TestScanConfig_ServiceLinkedRoleDefault(t *testing.T) {
+	if (ScanConfig{}).IncludeServiceLinkedRoles {
+		t.Fatal("expected service-linked role inclusion to default false")
+	}
+}
+
 func TestFinding_NoMetadata(t *testing.T) {
 	f := Finding{
 		ID:             FindingUnattachedPolicy,

@@ -166,9 +166,9 @@ func TestProviderCommonFlagMatrix(t *testing.T) {
 		providerFlags []string
 		foreignFlags  []string
 	}{
-		{name: "aws", register: func(cmd *cobra.Command) { registerAWSFlags(cmd, &awsScanFlags{}) }, providerFlags: []string{"profile"}, foreignFlags: []string{"project", "tenant", "include-guests"}},
-		{name: "gcp", register: func(cmd *cobra.Command) { registerGCPFlags(cmd, &gcpScanFlags{}) }, providerFlags: []string{"project"}, foreignFlags: []string{"profile", "tenant", "include-guests"}},
-		{name: "azure", register: func(cmd *cobra.Command) { registerAzureFlags(cmd, &azureScanFlags{}) }, providerFlags: []string{"tenant", "include-guests"}, foreignFlags: []string{"profile", "project"}},
+		{name: "aws", register: func(cmd *cobra.Command) { registerAWSFlags(cmd, &awsScanFlags{}) }, providerFlags: []string{"profile", "include-service-linked-roles"}, foreignFlags: []string{"project", "tenant", "include-guests"}},
+		{name: "gcp", register: func(cmd *cobra.Command) { registerGCPFlags(cmd, &gcpScanFlags{}) }, providerFlags: []string{"project"}, foreignFlags: []string{"profile", "tenant", "include-guests", "include-service-linked-roles"}},
+		{name: "azure", register: func(cmd *cobra.Command) { registerAzureFlags(cmd, &azureScanFlags{}) }, providerFlags: []string{"tenant", "include-guests"}, foreignFlags: []string{"profile", "project", "include-service-linked-roles"}},
 	}
 	common := []string{"stale-days", "severity-min", "format", "output", "timeout"}
 	for _, provider := range providers {
@@ -187,6 +187,17 @@ func TestProviderCommonFlagMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// WO-44@v2: pin the safety-critical AWS-only flag contract.
+func TestAWSServiceLinkedRoleFlagMetadata(t *testing.T) {
+	cmd := &cobra.Command{Use: "aws"}
+	registerAWSFlags(cmd, &awsScanFlags{})
+	flag := cmd.Flags().Lookup("include-service-linked-roles")
+	if flag == nil || flag.DefValue != "false" || flag.Value.Type() != "bool" ||
+		flag.Usage != "Include unused AWS service-linked roles" {
+		t.Fatalf("include-service-linked-roles = %#v", flag)
 	}
 }
 

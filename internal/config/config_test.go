@@ -29,6 +29,7 @@ stale_days: 60
 severity_min: medium
 format: json
 timeout: 5m
+include_service_linked_roles: true
 regions:
   - us-east-1
 exclude:
@@ -59,6 +60,10 @@ exclude:
 	}
 	if cfg.Format != "json" {
 		t.Fatalf("expected format json, got %q", cfg.Format)
+	}
+	// WO-44@v2: parse the AWS-only service-linked role opt-in.
+	if !cfg.IncludeServiceLinkedRoles {
+		t.Fatal("expected include_service_linked_roles true")
 	}
 	// WO-13@v2: verify region parsing remains visible to command resolution.
 	if len(cfg.Regions) != 1 || cfg.Regions[0] != "us-east-1" {

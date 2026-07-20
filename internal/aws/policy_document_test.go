@@ -3,6 +3,7 @@ package aws
 import (
 	"encoding/json"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,94 @@ func TestParsePolicyDocument_Basic(t *testing.T) {
 	}
 	if !doc.Statement[0].Action.Contains("s3:GetObject") {
 		t.Fatal("expected action s3:GetObject")
+	}
+}
+
+// WO-41@v2: AWS accepts a single Statement object as well as an array.
+func TestParsePolicyDocument_SingleStatementObject(t *testing.T) {
+	raw := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Action":"*","Resource":"*"}}`
+
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Statement) != 1 {
+		t.Fatalf("expected one statement, got %d", len(doc.Statement))
+	}
+	if !doc.HasWildcardAction() || !doc.HasWildcardResource() {
+		t.Fatal("expected single statement to participate in wildcard detection")
+	}
+}
+
+// WO-41@v2: object-form trust statements retain their principal and action fields.
+func TestParsePolicyDocument_SingleTrustStatementObject(t *testing.T) {
+	raw := `{"Statement":{"Sid":"trust","Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}}`
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Statement) != 1 || doc.Statement[0].Sid != "trust" ||
+		doc.Statement[0].Principal == nil || !doc.Statement[0].Principal.Wildcard ||
+		!doc.Statement[0].HasAssumeRoleAction() {
+		t.Fatalf("trust statement was not preserved: %#v", doc.Statement)
+	}
+}
+
+// WO-41@v2: array normalization preserves statement order and contents.
+func TestParsePolicyDocument_StatementArrayOrder(t *testing.T) {
+	raw := `{"Statement":[{"Sid":"first","Action":"s3:GetObject"},{"Sid":"second","Action":"s3:PutObject"}]}`
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Statement) != 2 || doc.Statement[0].Sid != "first" || doc.Statement[1].Sid != "second" {
+		t.Fatalf("statement order changed: %#v", doc.Statement)
+	}
+}
+
+// WO-41@v2: shape normalization must preserve legacy empty and null behavior.
+func TestParsePolicyDocument_StatementContainerShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{name: "absent", raw: `{"Version":"2012-10-17"}`, want: 0},
+		{name: "null", raw: `{"Version":"2012-10-17","Statement":null}`, want: 0},
+		{name: "empty array", raw: `{"Version":"2012-10-17","Statement":[]}`, want: 0},
+		{name: "empty object", raw: `{"Version":"2012-10-17","Statement":{}}`, want: 1},
+		{name: "null array element", raw: `{"Version":"2012-10-17","Statement":[null]}`, want: 1},
+		{name: "two statements", raw: `{"Version":"2012-10-17","Statement":[{},{}]}`, want: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc, err := ParsePolicyDocument(url.QueryEscape(tt.raw))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(doc.Statement) != tt.want {
+				t.Fatalf("statements = %d, want %d", len(doc.Statement), tt.want)
+			}
+		})
+	}
+}
+
+// WO-41@v2: malformed Statement containers remain hard parse failures.
+func TestParsePolicyDocument_InvalidStatementShapes(t *testing.T) {
+	for _, raw := range []string{
+		`{"Statement":"bad"}`,
+		`{"Statement":42}`,
+		`{"Statement":true}`,
+		`{"Statement":[42]}`,
+		`{"Statement":{"Action":42}}`,
+	} {
+		if _, err := ParsePolicyDocument(url.QueryEscape(raw)); err == nil {
+			t.Fatalf("expected parse error for %s", raw)
+		}
+	}
+	_, err := ParsePolicyDocument(url.QueryEscape(`{"Statement":[{"Effect":42}]}`))
+	if err == nil || !strings.Contains(err.Error(), "Effect") {
+		t.Fatalf("expected field-qualified array error, got %v", err)
 	}
 }
 
