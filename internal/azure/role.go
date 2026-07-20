@@ -7,15 +7,21 @@ import (
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
 
-// RoleScanner detects unused directory role assignments.
+// WO-73@v1: RoleScanner retains tri-state principal activity evidence and tenant coverage scope.
 type RoleScanner struct {
 	api               GraphAPI
-	principalActivity map[string]bool
+	principalActivity map[string]PrincipalActivityState
+	coverageScope     string
 }
 
-// NewRoleScanner creates a scanner with a pre-built principal activity map.
-func NewRoleScanner(api GraphAPI, principalActivity map[string]bool) *RoleScanner {
-	return &RoleScanner{api: api, principalActivity: principalActivity}
+// WO-73@v1: NewRoleScanner preserves unknown evidence instead of treating absence as inactivity.
+func NewRoleScanner(api GraphAPI, principalActivity map[string]PrincipalActivityState) *RoleScanner {
+	return NewRoleScannerWithScope(api, principalActivity, "azure-tenant:unknown")
+}
+
+// WO-73@v1: NewRoleScannerWithScope binds a deduplicatable coverage gap to its tenant.
+func NewRoleScannerWithScope(api GraphAPI, principalActivity map[string]PrincipalActivityState, coverageScope string) *RoleScanner {
+	return &RoleScanner{api: api, principalActivity: principalActivity, coverageScope: coverageScope}
 }
 
 // Type returns the resource type this scanner handles.
@@ -23,7 +29,7 @@ func (s *RoleScanner) Type() iam.ResourceType {
 	return iam.ResourceAzureDirectoryRole
 }
 
-// Scan checks directory role assignments for inactive principals.
+// WO-73@v1: Scan emits UNUSED_ROLE only for known stale evidence and reports unknown coverage once.
 func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
 	assignments, err := s.api.ListDirectoryRoleAssignments(ctx)
 	if err != nil {
@@ -31,13 +37,21 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	}
 
 	result := &iam.ScanResult{PrincipalsScanned: len(assignments)}
+	unknown := 0
+	evaluable := 0
 
 	for _, a := range assignments {
 		if iam.IsExcluded(cfg, a.ID, a.PrincipalID) { // WO-14@v3: use the shared exclusion policy.
 			continue
 		}
 
-		if !s.principalActivity[a.PrincipalID] {
+		state := s.principalActivity[a.PrincipalID]
+		if state == "" || state == PrincipalActivityUnknown {
+			unknown++
+			continue
+		}
+		evaluable++
+		if state == PrincipalActivityStale {
 			result.Findings = append(result.Findings, iam.Finding{
 				ID:             iam.FindingUnusedRole,
 				Severity:       iam.SeverityMedium,
@@ -52,6 +66,14 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 				},
 			})
 		}
+	}
+	if unknown > 0 {
+		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
+			Capability: "azure_principal_sign_in_activity", Cause: "principal_activity_unknown",
+			Scope: s.coverageScope, FindingID: iam.FindingUnusedRole, AffectedCount: unknown,
+			EvaluableCount: evaluable, TotalCount: evaluable + unknown,
+			FeatureStage: "mixed", MaxConsequence: iam.SeverityMedium,
+		})
 	}
 
 	return result, nil

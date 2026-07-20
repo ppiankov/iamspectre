@@ -17,11 +17,13 @@ var overprivilegedRoleIDs = map[string]string{
 	"06b708a9-e830-4db3-a914-8e69da51d44f": "AppRoleAssignment.ReadWrite.All",
 }
 
-// ServicePrincipalScanner detects stale service principals and overprivileged apps.
+// WO-68@v2: ServicePrincipalScanner carries activity diagnostics and coverage alongside other checks.
 type ServicePrincipalScanner struct {
-	api      GraphAPI
-	sps      []ServicePrincipal
-	fetchErr error
+	api         GraphAPI
+	sps         []ServicePrincipal
+	fetchErr    error
+	coverage    *iam.CoverageGapObservation
+	activityErr error
 }
 
 // NewServicePrincipalScanner creates a scanner with pre-fetched service principal data.
@@ -29,18 +31,29 @@ func NewServicePrincipalScanner(api GraphAPI, sps []ServicePrincipal, fetchErr e
 	return &ServicePrincipalScanner{api: api, sps: sps, fetchErr: fetchErr}
 }
 
+// WO-68@v2: preserve the old constructor while production wiring supplies explicit activity coverage evidence.
+func NewServicePrincipalScannerWithActivityCoverage(api GraphAPI, sps []ServicePrincipal, fetchErr, activityErr error, coverage *iam.CoverageGapObservation) *ServicePrincipalScanner {
+	return &ServicePrincipalScanner{api: api, sps: sps, fetchErr: fetchErr, activityErr: activityErr, coverage: coverage}
+}
+
 // Type returns the resource type this scanner handles.
 func (s *ServicePrincipalScanner) Type() iam.ResourceType {
 	return iam.ResourceAzureServicePrincipal
 }
 
-// Scan checks Azure AD service principals for staleness and overprivileged permissions.
+// WO-68@v2: Scan preserves overprivileged checks when activity evidence is unavailable.
 func (s *ServicePrincipalScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
 	if s.fetchErr != nil {
 		return nil, fmt.Errorf("fetch service principals: %w", s.fetchErr)
 	}
 
 	result := &iam.ScanResult{PrincipalsScanned: len(s.sps)}
+	if s.activityErr != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("service principal sign-in activity: %v", s.activityErr))
+	}
+	if s.coverage != nil {
+		result.CoverageGaps = append(result.CoverageGaps, *s.coverage)
+	}
 	cutoff := iam.StaleThreshold(time.Now(), cfg.StaleDays) // WO-24@v2: preserve the local clock sample.
 
 	for _, sp := range s.sps {

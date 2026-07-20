@@ -2,6 +2,16 @@ package azure
 
 import "time"
 
+// WO-73@v1: PrincipalActivityState distinguishes known inactivity from unavailable evidence.
+type PrincipalActivityState string
+
+// WO-73@v1: zero-like unknown prevents absence from becoming inactivity.
+const (
+	PrincipalActivityUnknown PrincipalActivityState = "unknown"
+	PrincipalActivityRecent  PrincipalActivityState = "recent"
+	PrincipalActivityStale   PrincipalActivityState = "stale"
+)
+
 // User represents a Microsoft Graph user.
 type User struct {
 	ID                string          `json:"id"`
@@ -43,6 +53,13 @@ type ServicePrincipal struct {
 	DisplayName        string              `json:"displayName"`
 	SignInActivity     *SignInActivity     `json:"signInActivity"`
 	AppRoleAssignments []AppRoleAssignment `json:"appRoleAssignments"`
+}
+
+// WO-68@v2: ServicePrincipalSignInActivity models the beta report keyed by application ID.
+type ServicePrincipalSignInActivity struct {
+	ID                 string          `json:"id"`
+	AppID              string          `json:"appId"`
+	LastSignInActivity *SignInActivity `json:"lastSignInActivity"`
 }
 
 // AppRoleAssignment represents a permission granted to a service principal.
