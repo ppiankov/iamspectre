@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,51 @@ func TestAzureScanner_ScanAll_Empty(t *testing.T) {
 	}
 }
 
+// WO-68@v3: unavailable beta evidence clears legacy activity without blocking other Azure checks.
+func TestAzureScanner_ServicePrincipalActivityUnavailable(t *testing.T) {
+	legacySignIn := time.Now().AddDate(0, 0, -200)
+	mock := &mockGraph{
+		sps:           []ServicePrincipal{{ID: "sp-1", AppID: "app-1", DisplayName: "SP", SignInActivity: &SignInActivity{LastSignInDateTime: &legacySignIn}}},
+		spActivityErr: fmt.Errorf("license unavailable"),
+		secDefaults:   &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+	result, err := NewAzureScanner(NewClientWith("tenant-a", mock), iam.ScanConfig{StaleDays: 90}).ScanAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findFinding(result.Findings, iam.FindingStaleSP) != nil {
+		t.Fatal("missing activity evidence emitted STALE_SP")
+	}
+	if len(result.CoverageGaps) != 1 || result.CoverageGaps[0].AffectedCount != 1 || result.CoverageGaps[0].Cause != "report_unavailable" {
+		t.Fatalf("coverage gaps = %#v", result.CoverageGaps)
+	}
+	if len(result.Errors) == 0 || !strings.Contains(strings.Join(result.Errors, "|"), "license unavailable") {
+		t.Fatalf("errors = %#v", result.Errors)
+	}
+}
+
+// WO-68@v3: report rows join by appId to enrich the role-activity map, but a stale sign-in
+// derived from the beta report never becomes a severity STALE_SP finding. Present rows also
+// mean no coverage gap. Beta stays enrichment-only; it never drives a severity verdict.
+func TestAzureScanner_ServicePrincipalActivityJoin(t *testing.T) {
+	lastSignIn := time.Now().AddDate(0, 0, -100)
+	mock := &mockGraph{
+		sps:          []ServicePrincipal{{ID: "sp-1", AppID: "app-1", DisplayName: "SP"}},
+		spActivities: []ServicePrincipalSignInActivity{{AppID: "app-1", LastSignInActivity: &SignInActivity{LastSignInDateTime: &lastSignIn}}},
+		secDefaults:  &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+	result, err := NewAzureScanner(NewClientWith("tenant-a", mock), iam.ScanConfig{StaleDays: 90}).ScanAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findFinding(result.Findings, iam.FindingStaleSP) != nil {
+		t.Fatalf("beta-derived stale sign-in must not emit STALE_SP: %#v", result.Findings)
+	}
+	if len(result.CoverageGaps) != 0 {
+		t.Fatalf("present report rows should leave no coverage gap: %#v", result.CoverageGaps)
+	}
+}
+
 func TestAzureScanner_ScanAll_UserFetchError(t *testing.T) {
 	// WO-28@v2: share exact non-fatal error assertions across provider packages.
 	mock := &mockGraph{
@@ -57,7 +103,9 @@ func TestAzureScanner_ScanAll_SPFetchError(t *testing.T) {
 	testutil.AssertNonFatalScannerErrors(t, scanner.ScanAll, 1, "access denied")
 }
 
+// WO-68@v3, WO-73@v1: joined activity drives both SP and role decisions through orchestration.
 func TestAzureScanner_ScanAll_Integration(t *testing.T) {
+	// WO-73@v1: a known-stale principal keeps the integration assertion evidence-backed.
 	lastSignIn := time.Now().AddDate(0, 0, -100)
 	expired := time.Now().AddDate(0, -1, 0)
 
@@ -69,6 +117,10 @@ func TestAzureScanner_ScanAll_Integration(t *testing.T) {
 				DisplayName:       "Stale User",
 				UserType:          "Member",
 				SignInActivity:    &SignInActivity{LastSignInDateTime: &lastSignIn},
+			},
+			{
+				ID: "inactive-principal", UserPrincipalName: "inactive@example.com", DisplayName: "Inactive",
+				UserType: "Member", SignInActivity: &SignInActivity{LastSignInDateTime: &lastSignIn},
 			},
 		},
 		apps: []Application{
@@ -134,6 +186,7 @@ func TestAzureScanner_ScanAll_Integration(t *testing.T) {
 	}
 }
 
+// WO-73@v1: the activity map preserves every evidence state.
 func TestBuildPrincipalActivityMap(t *testing.T) {
 	recentSignIn := time.Now().AddDate(0, 0, -10)
 	oldSignIn := time.Now().AddDate(0, 0, -200)
@@ -149,16 +202,54 @@ func TestBuildPrincipalActivityMap(t *testing.T) {
 
 	activity := buildPrincipalActivityMap(users, sps, 90)
 
-	if !activity["active-user"] {
-		t.Fatal("expected active-user to be active")
+	if activity["active-user"] != PrincipalActivityRecent {
+		t.Fatalf("active-user = %q", activity["active-user"])
 	}
-	if activity["stale-user"] {
-		t.Fatal("expected stale-user to be inactive")
+	if activity["stale-user"] != PrincipalActivityStale {
+		t.Fatalf("stale-user = %q", activity["stale-user"])
 	}
-	if activity["no-data-user"] {
-		t.Fatal("expected no-data-user to be inactive")
+	if activity["no-data-user"] != PrincipalActivityUnknown {
+		t.Fatalf("no-data-user = %q", activity["no-data-user"])
 	}
-	if !activity["active-sp"] {
-		t.Fatal("expected active-sp to be active")
+	if activity["active-sp"] != PrincipalActivityRecent {
+		t.Fatalf("active-sp = %q", activity["active-sp"])
+	}
+}
+
+// WO-68@v3: missing authoritative rows erase stale compatibility data before role decisions.
+func TestJoinServicePrincipalActivityClearsEmbeddedEvidence(t *testing.T) {
+	legacySignIn := time.Now().AddDate(0, 0, -200)
+	joined, coverage := joinServicePrincipalActivity(
+		[]ServicePrincipal{{ID: "sp-1", AppID: "app-1", DisplayName: "SP", SignInActivity: &SignInActivity{LastSignInDateTime: &legacySignIn}}},
+		nil, nil, "tenant-a", iam.ScanConfig{StaleDays: 90},
+	)
+	if joined[0].SignInActivity != nil || buildPrincipalActivityMap(nil, joined, 90)["sp-1"] != PrincipalActivityUnknown {
+		t.Fatalf("joined principals retained non-authoritative evidence: %#v", joined)
+	}
+	if coverage == nil || coverage.Cause != "missing_report_rows" || coverage.AffectedCount != 1 {
+		t.Fatalf("coverage = %#v", coverage)
+	}
+}
+
+// WO-75@v1: excluded principals do not inflate missing-evidence opportunity counts.
+func TestJoinServicePrincipalActivityExcludesCoverageOpportunities(t *testing.T) {
+	recent := time.Now().AddDate(0, 0, -10)
+	principals := []ServicePrincipal{
+		{ID: "excluded-id", AppID: "excluded-app", DisplayName: "Excluded"},
+		{ID: "eligible-id", AppID: "eligible-app", DisplayName: "Eligible"},
+	}
+	activities := []ServicePrincipalSignInActivity{{AppID: "excluded-app", LastSignInActivity: &SignInActivity{LastSignInDateTime: &recent}}}
+	_, coverage := joinServicePrincipalActivity(principals, activities, nil, "tenant-a", iam.ScanConfig{
+		StaleDays: 90, Exclude: iam.ExcludeConfig{ResourceIDs: map[string]bool{"excluded-id": true}},
+	})
+	if coverage == nil || coverage.AffectedCount != 1 || coverage.EvaluableCount != 0 || coverage.TotalCount != 1 {
+		t.Fatalf("coverage = %#v", coverage)
+	}
+
+	_, coverage = joinServicePrincipalActivity(principals[:1], nil, nil, "tenant-a", iam.ScanConfig{
+		StaleDays: 90, Exclude: iam.ExcludeConfig{Principals: map[string]bool{"Excluded": true}},
+	})
+	if coverage != nil {
+		t.Fatalf("all-excluded coverage = %#v", coverage)
 	}
 }

@@ -17,6 +17,7 @@ type sarifRun struct {
 	Tool        sarifTool         `json:"tool"`
 	Results     []sarifResult     `json:"results"`
 	Invocations []sarifInvocation `json:"invocations,omitempty"` // WO-32@v2: expose partial scanner failures to SARIF consumers
+	Properties  map[string]any    `json:"properties,omitempty"`  // WO-70@v4: coverage is run evidence, not a synthetic result.
 }
 
 // WO-32@v2: represent a failed scan execution without hiding the meaningful false value.
@@ -127,6 +128,7 @@ func (r *SARIFReporter) Generate(data Data) error {
 				},
 				Results:     results,
 				Invocations: invocations,
+				Properties:  sarifCoverageProperties(data.Coverage),
 			},
 		},
 	}
@@ -134,6 +136,14 @@ func (r *SARIFReporter) Generate(data Data) error {
 	enc := json.NewEncoder(r.Writer)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)
+}
+
+// WO-70@v4: omit an empty manifest while preserving the typed plane when present.
+func sarifCoverageProperties(manifest CoverageManifest) map[string]any {
+	if len(manifest.Gaps) == 0 {
+		return nil
+	}
+	return map[string]any{"coverage_manifest": manifest}
 }
 
 func sarifLevel(s iam.Severity) string {
@@ -160,6 +170,8 @@ func buildSARIFRules() []sarifRule {
 		{ID: string(iam.FindingCrossAccountTrust), ShortDescription: sarifMessage{Text: "Cross-account trust without conditions"}},
 		{ID: string(iam.FindingStaleSA), ShortDescription: sarifMessage{Text: "Stale service account"}},
 		{ID: string(iam.FindingStaleSAKey), ShortDescription: sarifMessage{Text: "Stale service account key"}},
+		// WO-69@v2: disabled is a reversible lifecycle fact, registered as its own informational rule.
+		{ID: string(iam.FindingDisabledSA), ShortDescription: sarifMessage{Text: "Disabled service account"}},
 		{ID: string(iam.FindingOverprivilegedSA), ShortDescription: sarifMessage{Text: "Overprivileged service account"}},
 		{ID: string(iam.FindingStaleGuestUser), ShortDescription: sarifMessage{Text: "Stale Azure AD guest user"}},
 		{ID: string(iam.FindingLegacyAuth), ShortDescription: sarifMessage{Text: "Legacy authentication not blocked"}},

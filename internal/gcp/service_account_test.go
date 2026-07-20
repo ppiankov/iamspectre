@@ -95,6 +95,8 @@ func TestServiceAccountScanner_RecentKey(t *testing.T) {
 }
 
 func TestServiceAccountScanner_DisabledSA(t *testing.T) {
+	// WO-69@v2: disabled state alone is not staleness, but the fact is preserved as an
+	// informational DISABLED_SA finding (no delete advice), never suppressed to nothing.
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{
 			{Name: "projects/test/serviceAccounts/sa1", Email: "sa1@test.iam.gserviceaccount.com", UniqueId: "123", Disabled: true},
@@ -111,18 +113,22 @@ func TestServiceAccountScanner_DisabledSA(t *testing.T) {
 	}
 
 	if len(result.Findings) != 1 {
-		t.Fatalf("expected 1 finding (disabled SA), got %d", len(result.Findings))
+		t.Fatalf("expected exactly one informational finding, got %#v", result.Findings)
 	}
 	f := result.Findings[0]
-	if f.ID != iam.FindingStaleSA {
-		t.Fatalf("expected STALE_SA, got %s", f.ID)
+	if f.ID != iam.FindingDisabledSA {
+		t.Fatalf("expected DISABLED_SA, got %s", f.ID)
 	}
-	if f.Severity != iam.SeverityHigh {
-		t.Fatalf("expected high severity, got %s", f.Severity)
+	if f.Severity != iam.SeverityLow {
+		t.Fatalf("expected low severity for disabled fact, got %s", f.Severity)
+	}
+	if f.ID == iam.FindingStaleSA {
+		t.Fatalf("disabled must not be reported as STALE_SA")
 	}
 }
 
 func TestServiceAccountScanner_DisabledWithStaleKey(t *testing.T) {
+	// WO-69@v2: disabled accounts remain in key scanning and retain stale-key evidence.
 	staleTime := time.Now().AddDate(0, 0, -100).Format(time.RFC3339)
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{
@@ -141,9 +147,16 @@ func TestServiceAccountScanner_DisabledWithStaleKey(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	// Should have both STALE_SA and STALE_SA_KEY
-	if len(result.Findings) != 2 {
-		t.Fatalf("expected 2 findings (disabled SA + stale key), got %d", len(result.Findings))
+	// WO-69@v2: disabled fact and stale-key evidence are independent axes; both are reported.
+	ids := map[iam.FindingID]bool{}
+	for _, f := range result.Findings {
+		ids[f.ID] = true
+	}
+	if !ids[iam.FindingStaleSAKey] {
+		t.Fatalf("expected STALE_SA_KEY, got %#v", result.Findings)
+	}
+	if !ids[iam.FindingDisabledSA] {
+		t.Fatalf("expected DISABLED_SA preserved alongside stale key, got %#v", result.Findings)
 	}
 }
 

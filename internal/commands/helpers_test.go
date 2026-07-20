@@ -210,6 +210,11 @@ func TestAnalyzeAndReportJSON(t *testing.T) {
 			{ID: iam.FindingUnusedRole, Severity: iam.SeverityLow, ResourceID: "low"},
 		},
 		Errors: []string{"scan warning"}, PrincipalsScanned: 2,
+		CoverageGaps: []iam.CoverageGapObservation{{
+			Capability: "activity", Cause: "unavailable", Scope: "account:prod",
+			FindingID: iam.FindingUnusedRole, AffectedCount: 1, TotalCount: 1,
+			MaxConsequence: iam.SeverityMedium,
+		}},
 	}
 	wantTime := time.Date(2026, time.July, 19, 1, 2, 3, 0, time.UTC)
 	err := analyzeAndReport(result, postScanOptions{
@@ -236,6 +241,10 @@ func TestAnalyzeAndReportJSON(t *testing.T) {
 	}
 	if errorsValue, ok := decoded["errors"].([]any); !ok || len(errorsValue) != 1 || errorsValue[0] != "scan warning" {
 		t.Fatalf("errors = %#v, want scan warning", decoded["errors"])
+	}
+	coverage, ok := decoded["coverage_manifest"].(map[string]any)
+	if !ok || coverage["unique_missing_capabilities"] != float64(1) {
+		t.Fatalf("coverage_manifest = %#v", decoded["coverage_manifest"])
 	}
 	target, ok := decoded["target"].(map[string]any)
 	if !ok || target["type"] != "aws-account" || target["uri_hash"] != computeTargetHash("prod") {
@@ -297,11 +306,16 @@ func (w *closeErrorWriter) Close() error { return w.err }
 
 // WO-25@v2: every reporter format must execute through the shared pipeline.
 func TestAnalyzeAndReportFormats(t *testing.T) {
+	// WO-74@v5: SpectreHub integration uses release metadata accepted by the consumer schema.
+	oldVersion := version
+	version = "0.1.0"
+	t.Cleanup(func() { version = oldVersion })
 	for _, format := range []string{"text", "json", "sarif", "spectrehub"} {
 		t.Run(format, func(t *testing.T) {
 			var output bytes.Buffer
 			err := analyzeAndReport(&iam.ScanResult{}, postScanOptions{
 				format: format, severityMin: "low", timestamp: time.Unix(0, 0).UTC(), writer: &output,
+				targetType: "aws-account",
 			})
 			if err != nil || output.Len() == 0 {
 				t.Fatalf("format %s output=%q err=%v", format, output.String(), err)

@@ -24,6 +24,7 @@ func TestRoleScanner_ListError(t *testing.T) {
 	}
 }
 
+// WO-73@v1: known stale activity remains actionable.
 func TestRoleScanner_UnusedRole(t *testing.T) {
 	mock := &mockGraph{
 		roleAssigns: []DirectoryRoleAssignment{
@@ -35,8 +36,7 @@ func TestRoleScanner_UnusedRole(t *testing.T) {
 		},
 	}
 
-	// inactive-user is NOT in the activity map
-	activity := map[string]bool{"active-user": true}
+	activity := map[string]PrincipalActivityState{"inactive-user": PrincipalActivityStale}
 	s := NewRoleScanner(mock, activity)
 	result, err := s.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
 	if err != nil {
@@ -52,6 +52,7 @@ func TestRoleScanner_UnusedRole(t *testing.T) {
 	}
 }
 
+// WO-73@v1: known recent activity remains non-actionable.
 func TestRoleScanner_ActiveRole(t *testing.T) {
 	mock := &mockGraph{
 		roleAssigns: []DirectoryRoleAssignment{
@@ -63,7 +64,7 @@ func TestRoleScanner_ActiveRole(t *testing.T) {
 		},
 	}
 
-	activity := map[string]bool{"active-user": true}
+	activity := map[string]PrincipalActivityState{"active-user": PrincipalActivityRecent}
 	s := NewRoleScanner(mock, activity)
 	result, err := s.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
 	if err != nil {
@@ -75,6 +76,7 @@ func TestRoleScanner_ActiveRole(t *testing.T) {
 	}
 }
 
+// WO-73@v1: absent activity is unknown coverage, not evidence of an unused role.
 func TestRoleScanner_NilActivityMap(t *testing.T) {
 	mock := &mockGraph{
 		roleAssigns: []DirectoryRoleAssignment{
@@ -86,15 +88,17 @@ func TestRoleScanner_NilActivityMap(t *testing.T) {
 		},
 	}
 
-	// nil activity map means all principals treated as inactive
 	s := NewRoleScanner(mock, nil)
 	result, err := s.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if findFinding(result.Findings, iam.FindingUnusedRole) == nil {
-		t.Fatal("expected UNUSED_ROLE when activity map is nil")
+	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
+		t.Fatal("unknown activity emitted UNUSED_ROLE")
+	}
+	if len(result.CoverageGaps) != 1 || result.CoverageGaps[0].AffectedCount != 1 {
+		t.Fatalf("coverage gaps = %#v", result.CoverageGaps)
 	}
 }
 
@@ -123,6 +127,7 @@ func TestRoleScanner_Excluded(t *testing.T) {
 	}
 }
 
+// WO-73@v1: tri-state evidence does not change scan accounting.
 func TestRoleScanner_PrincipalsScanned(t *testing.T) {
 	mock := &mockGraph{
 		roleAssigns: []DirectoryRoleAssignment{
@@ -131,7 +136,7 @@ func TestRoleScanner_PrincipalsScanned(t *testing.T) {
 		},
 	}
 
-	activity := map[string]bool{"p1": true, "p2": true}
+	activity := map[string]PrincipalActivityState{"p1": PrincipalActivityRecent, "p2": PrincipalActivityRecent}
 	s := NewRoleScanner(mock, activity)
 	result, err := s.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
 	if err != nil {

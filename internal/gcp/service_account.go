@@ -40,16 +40,18 @@ func (s *ServiceAccountScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*
 			continue
 		}
 
-		// Check if service account is disabled
+		// WO-69@v2: disabled is a reversible lifecycle state, not staleness. Report it as an
+		// informational fact (no delete advice); staleness is driven only by key evidence.
 		if sa.Disabled {
 			result.Findings = append(result.Findings, iam.Finding{
-				ID:             iam.FindingStaleSA,
-				Severity:       iam.SeverityHigh,
-				ResourceType:   iam.ResourceServiceAccount,
-				ResourceID:     sa.UniqueId,
-				ResourceName:   sa.Email,
-				Message:        "Service account is disabled",
-				Recommendation: "Remove the disabled service account if no longer needed",
+				ID:           iam.FindingDisabledSA,
+				Severity:     iam.SeverityLow,
+				ResourceType: iam.ResourceServiceAccount,
+				ResourceID:   sa.UniqueId,
+				ResourceName: sa.Email,
+				Message:      "Service account is disabled (reversible lifecycle state)",
+				Recommendation: "No action required. Disabling is the recommended reversible state before deletion; " +
+					"confirm the account is no longer needed before deleting it.",
 				Metadata: map[string]any{
 					"project":  s.project,
 					"disabled": true,
@@ -57,7 +59,6 @@ func (s *ServiceAccountScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*
 			})
 		}
 
-		// Check user-managed keys for staleness
 		keys, err := s.api.ListServiceAccountKeys(ctx, sa.Name)
 		if err != nil {
 			slog.Warn("Failed to list keys", "service_account", sa.Email, "error", err)

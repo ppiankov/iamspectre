@@ -1,6 +1,9 @@
 package iam
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Severity levels for findings.
 type Severity string
@@ -60,6 +63,7 @@ const (
 	FindingCrossAccountTrust FindingID = "CROSS_ACCOUNT_TRUST"
 	FindingStaleSA           FindingID = "STALE_SA"
 	FindingStaleSAKey        FindingID = "STALE_SA_KEY"
+	FindingDisabledSA        FindingID = "DISABLED_SA" // WO-69@v2: disabled is a reversible lifecycle state, reported as an informational fact, not staleness.
 	FindingOverprivilegedSA  FindingID = "OVERPRIVILEGED_SA"
 
 	FindingStaleGuestUser    FindingID = "STALE_GUEST_USER"
@@ -160,11 +164,27 @@ type Finding struct {
 	EvaluatedLayers map[AuthorizationLayer]LayerStatus `json:"evaluated_layers,omitempty"` // WO-20@v3: expose complete authorization-layer coverage.
 }
 
-// ScanResult holds all findings from scanning IAM resources.
+// WO-70@v4: ScanResult keeps actionable findings, diagnostics, and coverage observations distinct.
 type ScanResult struct {
-	Findings          []Finding `json:"findings"`
-	Errors            []string  `json:"errors,omitempty"`
-	PrincipalsScanned int       `json:"principals_scanned"`
+	Findings          []Finding                `json:"findings"`
+	Errors            []string                 `json:"errors,omitempty"`
+	CoverageGaps      []CoverageGapObservation `json:"coverage_gaps,omitempty"` // WO-70@v4: keep missing evidence separate from actionable findings.
+	PrincipalsScanned int                      `json:"principals_scanned"`
+}
+
+// WO-70@v4: CoverageGapObservation records one unevaluable check without fabricating a finding.
+type CoverageGapObservation struct {
+	Capability        string     `json:"capability"`
+	Cause             string     `json:"cause"`
+	Scope             string     `json:"scope"`
+	FindingID         FindingID  `json:"finding_id"`
+	AffectedCount     int        `json:"affected_count"`
+	EvaluableCount    int        `json:"evaluable_count"`
+	TotalCount        int        `json:"total_count"`
+	OldestEvidence    *time.Time `json:"oldest_evidence,omitempty"`
+	ObservationWindow string     `json:"observation_window,omitempty"`
+	FeatureStage      string     `json:"feature_stage,omitempty"`
+	MaxConsequence    Severity   `json:"max_consequence"`
 }
 
 // WO-15: ScanConfig carries the zero-value-safe Azure guest exclusion control.

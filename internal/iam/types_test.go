@@ -78,6 +78,7 @@ func TestFinding_AssessmentJSON(t *testing.T) {
 	}
 }
 
+// WO-70@v4: coverage observations have a stable ScanResult JSON round trip.
 func TestScanResult_JSON(t *testing.T) {
 	r := ScanResult{
 		Findings: []Finding{
@@ -90,6 +91,9 @@ func TestScanResult_JSON(t *testing.T) {
 				Recommendation: "Delete unused role",
 			},
 		},
+		CoverageGaps: []CoverageGapObservation{{
+			Capability: "activity", Scope: "account:a", FindingID: FindingUnusedRole, AffectedCount: 1,
+		}},
 		PrincipalsScanned: 25,
 	}
 
@@ -108,6 +112,9 @@ func TestScanResult_JSON(t *testing.T) {
 	}
 	if decoded.PrincipalsScanned != 25 {
 		t.Fatalf("expected 25 principals scanned, got %d", decoded.PrincipalsScanned)
+	}
+	if len(decoded.CoverageGaps) != 1 || decoded.CoverageGaps[0].Capability != "activity" {
+		t.Fatalf("coverage gaps = %#v", decoded.CoverageGaps)
 	}
 }
 

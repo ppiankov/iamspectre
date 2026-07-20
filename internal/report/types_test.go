@@ -250,10 +250,13 @@ func TestJSONReporter(t *testing.T) {
 	}
 }
 
+// WO-74@v5: pin canonical locations, stable IDs, supported severity, and summary field names.
 func TestSpectreHubReporter(t *testing.T) {
 	var buf bytes.Buffer
 	r := &SpectreHubReporter{Writer: &buf}
 	data := testData()
+	data.Findings[0].Severity = iam.SeverityHigh
+	data.Summary.BySeverity = map[string]int{"high": 1, "medium": 1}
 
 	if err := r.Generate(data); err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -262,6 +265,108 @@ func TestSpectreHubReporter(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, `"schema": "spectre/v1"`) {
 		t.Fatal("expected spectre/v1 schema")
+	}
+	if strings.Contains(output, `"resource_id"`) || strings.Contains(output, `"total_findings"`) {
+		t.Fatalf("native report fields leaked into spectre/v1: %s", output)
+	}
+	var envelope spectrehubEnvelope
+	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Findings) != 2 || envelope.Findings[0].Location == envelope.Findings[1].Location || envelope.Findings[0].Location == "" {
+		t.Fatalf("finding locations = %#v", envelope.Findings)
+	}
+	if envelope.Findings[0].ID != iam.FindingNoMFA || envelope.Findings[0].Severity != iam.SeverityHigh {
+		t.Fatalf("finding identity/severity = %#v", envelope.Findings[0])
+	}
+	if envelope.Summary.Total != 2 || envelope.Summary.High != 1 || envelope.Summary.Medium != 1 {
+		t.Fatalf("summary = %#v", envelope.Summary)
+	}
+}
+
+// WO-74@v5: unsupported metadata, capabilities, and malformed findings fail before any output.
+func TestSpectreHubReporterRejectsUnsupportedData(t *testing.T) {
+	supported := testData()
+	supported.Findings[0].Severity = iam.SeverityHigh
+
+	diagnostics := supported
+	diagnostics.Errors = []string{"activity report unavailable"}
+	coverage := supported
+	coverage.Coverage = CoverageManifest{Gaps: []CoverageGap{{Capability: "azure_activity"}}}
+	azureTarget := supported
+	azureTarget.Target.Type = "azure-tenant"
+	emptyID := supported
+	emptyID.Findings = append([]iam.Finding(nil), supported.Findings...)
+	emptyID.Findings[0].ID = ""
+	emptyLocation := supported
+	emptyLocation.Findings = append([]iam.Finding(nil), supported.Findings...)
+	emptyLocation.Findings[0].ResourceID = ""
+	emptyMessage := supported
+	emptyMessage.Findings = append([]iam.Finding(nil), supported.Findings...)
+	emptyMessage.Findings[0].Message = ""
+	unknownSeverity := supported
+	unknownSeverity.Findings = append([]iam.Finding(nil), supported.Findings...)
+	unknownSeverity.Findings[0].Severity = iam.Severity("urgent")
+	emptyTool := supported
+	emptyTool.Tool = ""
+	wrongTool := supported
+	wrongTool.Tool = "awsspectre"
+	emptyVersion := supported
+	emptyVersion.Version = ""
+	developmentVersion := supported
+	developmentVersion.Version = "dev"
+	zeroTimestamp := supported
+	zeroTimestamp.Timestamp = time.Time{}
+
+	tests := []struct {
+		name string
+		data Data
+		want string
+	}{
+		{name: "critical", data: testData(), want: "does not support critical severity"},
+		{name: "coverage", data: coverage, want: "does not support coverage_manifest"},
+		{name: "diagnostics", data: diagnostics, want: "does not support scan diagnostics"},
+		{name: "target", data: azureTarget, want: "does not support target type"},
+		{name: "empty id", data: emptyID, want: "id must not be empty"},
+		{name: "empty location", data: emptyLocation, want: "location must not be empty"},
+		{name: "empty message", data: emptyMessage, want: "message must not be empty"},
+		{name: "unknown severity", data: unknownSeverity, want: "does not support severity"},
+		{name: "empty tool", data: emptyTool, want: "requires tool"},
+		{name: "wrong tool", data: wrongTool, want: "requires tool"},
+		{name: "empty version", data: emptyVersion, want: "requires a semantic version"},
+		{name: "development version", data: developmentVersion, want: "requires a semantic version"},
+		{name: "zero timestamp", data: zeroTimestamp, want: "requires a nonzero timestamp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := (&SpectreHubReporter{Writer: &buf}).Generate(tt.data)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if buf.Len() != 0 {
+				t.Fatalf("partial output = %q", buf.String())
+			}
+		})
+	}
+}
+
+// WO-74@v5: current IAMSpectre AWS and GCP targets remain valid spectre/v1 values.
+func TestSpectreHubReporterSupportsCurrentTargets(t *testing.T) {
+	for _, targetType := range []string{"aws-account", "gcp-project"} {
+		t.Run(targetType, func(t *testing.T) {
+			var buf bytes.Buffer
+			data := Data{
+				Tool: "iamspectre", Version: "0.1.0", Timestamp: time.Unix(0, 0).UTC(),
+				Target: Target{Type: targetType},
+			}
+			if err := (&SpectreHubReporter{Writer: &buf}).Generate(data); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(buf.String(), `"type": "`+targetType+`"`) {
+				t.Fatalf("target output = %s", buf.String())
+			}
+		})
 	}
 }
 
@@ -539,5 +644,55 @@ func TestSARIFReporter_InvalidPartialAssessment(t *testing.T) {
 	}
 	if _, ok := result.Props["evidence_tier"]; !ok {
 		t.Fatal("invalid partial assessment metadata was omitted")
+	}
+}
+
+// WO-70@v4: native reporters preserve coverage; SpectreHub fails closed until its schema supports it.
+func TestReporters_CoverageManifestPlane(t *testing.T) {
+	data := testData()
+	data.Findings = nil
+	data.Summary.TotalFindings = 0
+	data.Coverage = CoverageManifest{
+		Gaps: []CoverageGap{{
+			Capability: "azure_activity", Cause: "report unavailable", Scope: "tenant:a",
+			AffectedFindings: []AffectedFindingClass{{FindingID: iam.FindingStaleSP, Count: 2}},
+			TotalCount:       2, FeatureStage: "beta", MaxConsequence: iam.SeverityHigh,
+		}},
+		TotalOpportunities: 2, UniqueMissingCapabilities: 1,
+	}
+
+	var jsonBuffer bytes.Buffer
+	if err := (&JSONReporter{Writer: &jsonBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jsonBuffer.String(), `"coverage_manifest"`) || strings.Contains(jsonBuffer.String(), `"id":"STALE_SP"`) {
+		t.Fatalf("JSON mixed coverage with findings: %s", jsonBuffer.String())
+	}
+	var hubBuffer bytes.Buffer
+	if err := (&SpectreHubReporter{Writer: &hubBuffer}).Generate(data); err == nil || !strings.Contains(err.Error(), "does not support coverage_manifest") {
+		t.Fatalf("SpectreHub coverage error = %v", err)
+	}
+	if hubBuffer.Len() != 0 {
+		t.Fatalf("SpectreHub emitted partial coverage output: %s", hubBuffer.String())
+	}
+
+	var textBuffer bytes.Buffer
+	if err := (&TextReporter{Writer: &textBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(textBuffer.String(), "Coverage gaps:") || !strings.Contains(textBuffer.String(), "azure_activity") {
+		t.Fatalf("text missing coverage plane: %s", textBuffer.String())
+	}
+
+	var sarifBuffer bytes.Buffer
+	if err := (&SARIFReporter{Writer: &sarifBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	var sarif sarifReport
+	if err := json.Unmarshal(sarifBuffer.Bytes(), &sarif); err != nil {
+		t.Fatal(err)
+	}
+	if len(sarif.Runs[0].Results) != 0 || sarif.Runs[0].Properties["coverage_manifest"] == nil {
+		t.Fatalf("SARIF coverage plane = %#v", sarif.Runs[0])
 	}
 }
