@@ -5,6 +5,16 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-20
+
+### Fixed
+
+- GCP disabled service-account keys are no longer reported as stale keys — a disabled key cannot present stale-credential exposure
+- Azure user activity now uses complete sign-in evidence and reports member and guest coverage gaps independently, so exclusions and missing evidence no longer distort either count
+- Azure MFA detection classifies authentication methods against an explicit allowlist of families that can actually satisfy MFA, and grades guest evidence conservatively
+- Disabled Azure Security Defaults is reported as an indeterminate legacy-auth risk ("Conditional Access not evaluated, coverage unknown") at low severity rather than as proven legacy-auth exposure
+- Dangerous Azure app-role assignments are matched only when scoped to Microsoft Graph's resource identity, and are not classified when that identity cannot be resolved — preventing misattribution from tenant-local apps reusing the same role GUIDs
+
 ## [0.4.0] - 2026-07-20
 
 ### Added
