@@ -5,11 +5,23 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.2] - 2026-07-21
+
+### Added
+
+- `--version` (and `-v`) flag now prints version information, matching the existing `version` subcommand
+
+### Changed
+
+- macOS release binaries are now signed and notarized before archiving, so downloads pass Gatekeeper without a manual quarantine-removal step
+- Stale GCP service-account keys are graded from evidence rather than age alone; age-only findings are reported at medium rather than critical severity
 
 ### Fixed
 
-- macOS release binaries are now signed and notarized before archiving so quarantined downloads can pass Gatekeeper
+- Microsoft Graph error details are preserved so authorization failures can be distinguished from license gating
+- GCP audit no longer double-counts principals scanned across concurrent scanners
+- GCP key-list failures and malformed key timestamps are surfaced as coverage gaps instead of being silently skipped
+- The local Google APIs Service Agent's expected Editor grant is no longer reported as an over-privileged finding (it is provider-managed and cannot be changed); user-restrictable default accounts remain actionable
 
 ## [0.4.1] - 2026-07-20
 
