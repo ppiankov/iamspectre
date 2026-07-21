@@ -17,6 +17,7 @@ func testData() Data {
 	return Data{
 		Tool:      "iamspectre",
 		Version:   "0.1.0",
+		Status:    CompletionComplete,
 		Timestamp: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC),
 		Target: Target{
 			Type:    "aws-account",
@@ -83,7 +84,7 @@ func TestTextReporter(t *testing.T) {
 	}
 }
 
-// WO-38: zero findings must not hide summary or scanner failures.
+// WO-86: zero findings from an incomplete scan must never render as an all-clear.
 func TestTextReporter_NoFindings(t *testing.T) {
 	var buf bytes.Buffer
 	r := &TextReporter{Writer: &buf}
@@ -91,22 +92,51 @@ func TestTextReporter_NoFindings(t *testing.T) {
 	data.Findings = nil
 	data.Summary.TotalFindings = 0
 	data.Errors = []string{"role scanner: denied", "policy scanner: timeout"}
+	data.Status = CompletionPartial
 
 	if err := r.Generate(data); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "No findings") {
-		t.Fatal("expected 'No findings' message")
+	if !strings.Contains(output, "Scan incomplete") || !strings.Contains(output, "No findings from completed checks.") {
+		t.Fatalf("expected qualified incomplete result:\n%s", output)
 	}
-	for _, expected := range []string{"Principals scanned: 50", "Total findings: 0", "role scanner: denied", "policy scanner: timeout"} {
+	if strings.Contains(output, "\nNo findings.\n") {
+		t.Fatalf("partial report contained unqualified all-clear:\n%s", output)
+	}
+	for _, expected := range []string{"Principals observed by completed checks: 50", "Total findings from completed checks: 0", "role scanner: denied", "policy scanner: timeout"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected no-findings output to contain %q", expected)
 		}
 	}
 	if strings.Index(output, data.Errors[0]) > strings.Index(output, data.Errors[1]) {
 		t.Fatal("expected scan errors in input order")
+	}
+}
+
+// WO-86: a complete empty audit preserves the existing concise all-clear.
+func TestTextReporter_CompleteNoFindings(t *testing.T) {
+	var buf bytes.Buffer
+	data := testData()
+	data.Findings = nil
+	data.Summary.TotalFindings = 0
+
+	if err := (&TextReporter{Writer: &buf}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "\nNo findings.\n") || strings.Contains(buf.String(), "Scan incomplete") {
+		t.Fatalf("complete empty report = %q", buf.String())
+	}
+}
+
+// WO-86: completion state is derived deterministically from scanner errors.
+func TestCompletionStateFor(t *testing.T) {
+	if got := CompletionStateFor(nil); got != CompletionComplete {
+		t.Fatalf("empty errors status = %q", got)
+	}
+	if got := CompletionStateFor([]string{"denied"}); got != CompletionPartial {
+		t.Fatalf("nonempty errors status = %q", got)
 	}
 }
 
@@ -247,6 +277,9 @@ func TestJSONReporter(t *testing.T) {
 	}
 	if !strings.Contains(output, `"NO_MFA"`) {
 		t.Fatal("expected NO_MFA finding")
+	}
+	if !strings.Contains(output, `"status": "complete"`) {
+		t.Fatal("expected explicit complete status")
 	}
 }
 

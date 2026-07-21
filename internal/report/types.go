@@ -13,10 +13,28 @@ type Reporter interface {
 	Generate(data Data) error
 }
 
+// WO-86: CompletionState makes complete and partial audits machine-readable.
+type CompletionState string
+
+// WO-86: reports have exactly one deterministic evidence-completion state.
+const (
+	CompletionComplete CompletionState = "complete"
+	CompletionPartial  CompletionState = "partial"
+)
+
+// WO-86: CompletionStateFor derives status solely from retained scanner errors.
+func CompletionStateFor(errors []string) CompletionState {
+	if len(errors) > 0 {
+		return CompletionPartial
+	}
+	return CompletionComplete
+}
+
 // Data holds all information needed to generate a report.
 type Data struct {
 	Tool      string           `json:"tool"`
 	Version   string           `json:"version"`
+	Status    CompletionState  `json:"status"` // WO-86: prevent consumers from inferring completeness from findings.
 	Timestamp time.Time        `json:"timestamp"`
 	Target    Target           `json:"target"`
 	Config    ReportConfig     `json:"config"`

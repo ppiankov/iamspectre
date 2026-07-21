@@ -35,6 +35,8 @@ func (ew *errWriter) println(s string) {
 // WO-42@v2, WO-43@v2, WO-47: render deterministic rows with complete, valid field identity.
 func (r *TextReporter) Generate(data Data) error {
 	w := &errWriter{w: r.Writer}
+	status := resolvedCompletionState(data)
+	partial := status == CompletionPartial
 
 	w.println("iamspectre — IAM Audit Report")
 	w.println(strings.Repeat("=", 60))
@@ -43,15 +45,25 @@ func (r *TextReporter) Generate(data Data) error {
 	w.printf("Cloud: %s\n", data.Config.Cloud)
 	w.printf("Stale threshold: %d days\n", data.Config.StaleDays)
 	w.printf("Scanned at: %s\n", data.Timestamp.UTC().Format(time.RFC3339))
+	w.printf("Status: %s\n", status)
 	if data.Config.SeverityMin != "" {
 		w.printf("Severity filter: %s\n", data.Config.SeverityMin)
 	}
 	w.println("")
+	if partial {
+		// WO-86: state incompleteness before findings so zero rows cannot read as an all-clear.
+		w.println("Scan incomplete: one or more checks failed; results below are partial.")
+		w.println("")
+	}
 
 	if len(data.Findings) == 0 {
-		w.println("No findings.")
-		printTextCoverage(w, data.Coverage)
-		printTextSummary(w, data)
+		if partial {
+			w.println("No findings from completed checks.")
+		} else {
+			w.println("No findings.")
+		}
+		printTextCoverage(w, data.Coverage, partial)
+		printTextSummary(w, data, partial)
 		return w.err
 	}
 
@@ -84,18 +96,30 @@ func (r *TextReporter) Generate(data Data) error {
 		return err
 	}
 
-	printTextCoverage(w, data.Coverage)
-	printTextSummary(w, data)
+	printTextCoverage(w, data.Coverage, partial)
+	printTextSummary(w, data, partial)
 	return w.err
 }
 
+// WO-86: retained errors structurally force partial status even for legacy callers.
+func resolvedCompletionState(data Data) CompletionState {
+	if len(data.Errors) > 0 || data.Status == CompletionPartial {
+		return CompletionPartial
+	}
+	return CompletionComplete
+}
+
 // WO-70@v4: render coverage gaps as a second plane, never as finding rows.
-func printTextCoverage(w *errWriter, manifest CoverageManifest) {
+func printTextCoverage(w *errWriter, manifest CoverageManifest, partial bool) {
 	if len(manifest.Gaps) == 0 {
 		return
 	}
 	w.println("")
-	w.println("Coverage gaps:")
+	if partial {
+		w.println("Coverage gaps from completed checks:")
+	} else {
+		w.println("Coverage gaps:")
+	}
 	for _, gap := range manifest.Gaps {
 		classes := make([]string, 0, len(gap.AffectedFindings))
 		for _, affected := range gap.AffectedFindings {
@@ -108,11 +132,16 @@ func printTextCoverage(w *errWriter, manifest CoverageManifest) {
 }
 
 // WO-42@v2: keep summary output deterministic alongside the finding table.
-func printTextSummary(w *errWriter, data Data) {
+func printTextSummary(w *errWriter, data Data, partial bool) {
 	w.println("")
 	w.println(strings.Repeat("-", 60))
-	w.printf("Principals scanned: %d\n", data.Summary.TotalPrincipalsScanned)
-	w.printf("Total findings: %d\n", data.Summary.TotalFindings)
+	if partial {
+		w.printf("Principals observed by completed checks: %d\n", data.Summary.TotalPrincipalsScanned)
+		w.printf("Total findings from completed checks: %d\n", data.Summary.TotalFindings)
+	} else {
+		w.printf("Principals scanned: %d\n", data.Summary.TotalPrincipalsScanned)
+		w.printf("Total findings: %d\n", data.Summary.TotalFindings)
+	}
 
 	if len(data.Summary.BySeverity) > 0 {
 		w.printf("By severity:")
