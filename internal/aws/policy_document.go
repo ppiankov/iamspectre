@@ -304,6 +304,76 @@ type ResourceApplicabilityAssessment struct {
 	Reason  string                               // WO-65@v2: preserve why evidence was or was not conclusive.
 }
 
+// WO-105@v3: wildcardRiskLevel orders statement-correlated policy breadth without changing detection.
+type wildcardRiskLevel int
+
+const (
+	wildcardRiskNone wildcardRiskLevel = iota
+	wildcardRiskMedium
+	wildcardRiskHigh
+	wildcardRiskCritical
+)
+
+// WO-105@v3: wildcardRiskAssessment retains the highest proved risk and its evidence rationale.
+type wildcardRiskAssessment struct {
+	level  wildcardRiskLevel // WO-105@v3: order the proved statement risk.
+	reason string            // WO-105@v3: retain the evidence basis for report metadata.
+}
+
+// WO-105@v3: assessWildcardRisk never combines action and resource evidence from different statements.
+func (d *PolicyDocument) assessWildcardRisk() wildcardRiskAssessment {
+	assessment := wildcardRiskAssessment{}
+	for _, statement := range d.Statement {
+		candidate := statement.assessWildcardRisk()
+		if candidate.level > assessment.level {
+			assessment = candidate
+		}
+	}
+	return assessment
+}
+
+// WO-105@v3: assessWildcardRisk grades only locally observable statement shape and boundedness.
+func (s PolicyStatement) assessWildcardRisk() wildcardRiskAssessment {
+	if s.Effect != "Allow" {
+		return wildcardRiskAssessment{}
+	}
+
+	actions := s.AssessActions()
+	wildcardAction := actions.State == ActionAssessmentDeterminate && actions.HasWildcard
+	wildcardResource := s.Resource.Contains("*")
+	if wildcardResource {
+		applicability := s.assessResourceApplicability()
+		if applicability.State == ResourceApplicabilityDeterminate && applicability.AllNone {
+			wildcardResource = false
+		}
+	}
+	if !wildcardAction && !wildcardResource {
+		return wildcardRiskAssessment{}
+	}
+
+	conditionBounded := s.AssessConditionBoundedness().State == ConditionBounded
+	fullAction := s.Action.Contains("*")
+	if fullAction && wildcardResource && !conditionBounded {
+		return wildcardRiskAssessment{level: wildcardRiskCritical, reason: "full action and wildcard resource without a proved condition bound"}
+	}
+	if fullAction {
+		return wildcardRiskAssessment{level: wildcardRiskHigh, reason: "full action wildcard is resource or condition scoped"}
+	}
+	if wildcardAction {
+		if wildcardResource && !conditionBounded || len(s.Resource) == 0 && !conditionBounded {
+			return wildcardRiskAssessment{level: wildcardRiskHigh, reason: "action wildcard lacks a concrete resource or proved condition bound"}
+		}
+		return wildcardRiskAssessment{level: wildcardRiskMedium, reason: "action wildcard is resource or condition scoped"}
+	}
+	if actions.State == ActionAssessmentIndeterminate {
+		return wildcardRiskAssessment{level: wildcardRiskHigh, reason: "resource wildcard action evidence is indeterminate"}
+	}
+	if len(actions.SensitiveActions) > 0 {
+		return wildcardRiskAssessment{level: wildcardRiskHigh, reason: "resource wildcard includes a sensitive IAM action"}
+	}
+	return wildcardRiskAssessment{level: wildcardRiskMedium, reason: "resource wildcard is limited to determinate non-sensitive actions"}
+}
+
 // AssessConditionBoundedness evaluates exactly the condition families ratified for local analysis.
 // WO-66@v2: key presence is never enough to infer a permission boundary.
 func (s PolicyStatement) AssessConditionBoundedness() ConditionBoundednessAssessment {
@@ -638,6 +708,41 @@ func (d *PolicyDocument) AssessConditionBoundedness() ConditionBoundednessAssess
 	return ConditionBoundednessAssessment{State: state, Reason: "all wildcard-resource statements have supported bounds"}
 }
 
+// WO-105@v3: assessResourceApplicability keeps catalog evidence scoped to one Allow statement.
+func (s PolicyStatement) assessResourceApplicability() ResourceApplicabilityAssessment {
+	if s.Effect != "Allow" || !s.Resource.Contains("*") {
+		return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "no wildcard-resource Allow statement"}
+	}
+	if len(s.NotResource) > 0 {
+		return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "Resource and NotResource are both present"}
+	}
+	actionPresent, actionValid := s.actionForm()
+	notActionPresent, _ := s.notActionForm()
+	if !actionPresent || !actionValid || notActionPresent || len(s.Action) == 0 {
+		return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action form is unsupported"}
+	}
+
+	allNone := true
+	for _, action := range s.Action {
+		if strings.ContainsAny(action, "*?") || strings.Contains(action, "${") {
+			return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action requires expansion"}
+		}
+		applicability, ok := lookupResourceApplicability(action)
+		if !ok {
+			return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action is absent from pinned catalog"}
+		}
+		switch applicability {
+		case ResourceApplicabilityNone:
+			// WO-65@v2: continue only on the exact value proving Resource:* is mandatory.
+		case ResourceApplicabilitySupported:
+			allNone = false
+		default:
+			return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "catalog applicability value is invalid"}
+		}
+	}
+	return ResourceApplicabilityAssessment{State: ResourceApplicabilityDeterminate, AllNone: allNone, Reason: "all exact actions are cataloged"}
+}
+
 // AssessResourceApplicability checks exact actions on every wildcard-resource Allow statement.
 // WO-65@v2: one unsupported action form or catalog miss preserves the finding.
 func (d *PolicyDocument) AssessResourceApplicability() ResourceApplicabilityAssessment {
@@ -648,30 +753,12 @@ func (d *PolicyDocument) AssessResourceApplicability() ResourceApplicabilityAsse
 			continue
 		}
 		found = true
-		if len(statement.NotResource) > 0 {
-			return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "Resource and NotResource are both present"} // WO-65@v2: complementary resource forms cannot prove neutralization.
+		assessment := statement.assessResourceApplicability()
+		if assessment.State == ResourceApplicabilityIndeterminate {
+			return assessment
 		}
-		actionPresent, actionValid := statement.actionForm()
-		notActionPresent, _ := statement.notActionForm()
-		if !actionPresent || !actionValid || notActionPresent || len(statement.Action) == 0 {
-			return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action form is unsupported"}
-		}
-		for _, action := range statement.Action {
-			if strings.ContainsAny(action, "*?") || strings.Contains(action, "${") {
-				return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action requires expansion"}
-			}
-			applicability, ok := lookupResourceApplicability(action)
-			if !ok {
-				return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "action is absent from pinned catalog"}
-			}
-			switch applicability {
-			case ResourceApplicabilityNone:
-				// WO-65@v2: continue only on the exact value proving Resource:* is mandatory.
-			case ResourceApplicabilitySupported:
-				allNone = false
-			default:
-				return ResourceApplicabilityAssessment{State: ResourceApplicabilityIndeterminate, Reason: "catalog applicability value is invalid"} // WO-65@v2: corrupt evidence cannot neutralize a finding.
-			}
+		if !assessment.AllNone {
+			allNone = false
 		}
 	}
 	if !found {

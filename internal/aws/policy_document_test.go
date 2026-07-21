@@ -586,3 +586,20 @@ func TestParsePolicyDocument_PreservesUnsupportedCondition(t *testing.T) {
 		t.Fatal("unsupported condition must remain nonconstraining")
 	}
 }
+
+// WO-105@v3: document grading selects one statement's maximum risk without cross-statement synthesis.
+func TestPolicyDocumentAssessWildcardRiskCorrelatesStatements(t *testing.T) {
+	raw := `{"Statement":[` +
+		`{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::bucket/*"},` +
+		`{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"},` +
+		`{"Effect":"Deny","Action":"*","Resource":"*"}` +
+		`]}`
+	doc, err := ParsePolicyDocument(url.QueryEscape(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	assessment := doc.assessWildcardRisk()
+	if assessment.level != wildcardRiskHigh || assessment.reason == "" {
+		t.Fatalf("assessment = %#v, want high with a reason", assessment)
+	}
+}

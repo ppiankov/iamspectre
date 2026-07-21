@@ -39,6 +39,7 @@ func TestPolicyScanner_UnattachedPolicy(t *testing.T) {
 	}
 }
 
+// WO-105@v3: a full action wildcard with a concrete resource remains high risk, not admin-equivalent.
 func TestPolicyScanner_WildcardActionPolicy(t *testing.T) {
 	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::my-bucket"}]}`
 	encodedDoc := url.QueryEscape(doc)
@@ -69,8 +70,8 @@ func TestPolicyScanner_WildcardActionPolicy(t *testing.T) {
 	if found == nil {
 		t.Fatal("expected WILDCARD_POLICY finding")
 	}
-	if found.Severity != iam.SeverityCritical {
-		t.Fatalf("expected critical severity, got %s", found.Severity)
+	if found.Severity != iam.SeverityHigh {
+		t.Fatalf("expected high severity, got %s", found.Severity)
 	}
 }
 
@@ -107,6 +108,7 @@ func TestPolicyScanner_WildcardResourcePolicy(t *testing.T) {
 }
 
 // WO-66@v2: proved bounded conditions lower resource breadth without suppressing it.
+// WO-105@v3: narrow determinate actions with wildcard resources are medium risk.
 func TestPolicyScanner_BoundedWildcardResourcePolicy(t *testing.T) {
 	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*","Condition":{"IpAddress":{"aws:SourceIp":"192.0.2.0/24"}}}]}`
 	mock := &mockIAM{
@@ -124,8 +126,8 @@ func TestPolicyScanner_BoundedWildcardResourcePolicy(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 	finding := findFinding(result.Findings, iam.FindingWildcardPolicy)
-	if finding == nil || finding.Severity != iam.SeverityHigh {
-		t.Fatalf("finding = %#v, want retained high-severity wildcard finding", finding)
+	if finding == nil || finding.Severity != iam.SeverityMedium {
+		t.Fatalf("finding = %#v, want retained medium-severity wildcard finding", finding)
 	}
 	if finding.Metadata["condition_boundedness"] != string(ConditionBounded) {
 		t.Fatalf("metadata = %#v, want bounded condition state", finding.Metadata)
@@ -133,6 +135,7 @@ func TestPolicyScanner_BoundedWildcardResourcePolicy(t *testing.T) {
 }
 
 // WO-66@v2: unsupported conditions preserve observed wildcard severity and record uncertainty.
+// WO-105@v3: condition uncertainty cannot promote a narrow action to admin-equivalent.
 func TestPolicyScanner_IndeterminateConditionPreservesWildcardSeverity(t *testing.T) {
 	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*","Condition":{"StringEqualsIfExists":{"aws:SourceAccount":"123456789012"}}}]}`
 	mock := &mockIAM{
@@ -144,15 +147,16 @@ func TestPolicyScanner_IndeterminateConditionPreservesWildcardSeverity(t *testin
 		t.Fatalf("scan: %v", err)
 	}
 	finding := findFinding(result.Findings, iam.FindingWildcardPolicy)
-	if finding == nil || finding.Severity != iam.SeverityCritical {
-		t.Fatalf("finding = %#v, want retained critical finding", finding)
+	if finding == nil || finding.Severity != iam.SeverityMedium {
+		t.Fatalf("finding = %#v, want retained medium finding", finding)
 	}
 	if finding.Metadata["condition_boundedness"] != string(ConditionIndeterminate) {
 		t.Fatalf("metadata = %#v, want indeterminate condition state", finding.Metadata)
 	}
 }
 
-// WO-66@v2: conditions cannot lower action-wildcard severity.
+// WO-66@v2: bounded condition evidence remains visible to wildcard grading.
+// WO-105@v3: a proved condition bound prevents an admin-equivalent classification.
 func TestPolicyScanner_BoundedConditionDoesNotLowerWildcardAction(t *testing.T) {
 	doc := `{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*","Condition":{"StringEquals":{"aws:SourceAccount":"123456789012"}}}]}`
 	mock := &mockIAM{
@@ -164,8 +168,74 @@ func TestPolicyScanner_BoundedConditionDoesNotLowerWildcardAction(t *testing.T) 
 		t.Fatalf("scan: %v", err)
 	}
 	finding := findFinding(result.Findings, iam.FindingWildcardPolicy)
-	if finding == nil || finding.Severity != iam.SeverityCritical {
-		t.Fatalf("finding = %#v, want critical action-wildcard finding", finding)
+	if finding == nil || finding.Severity != iam.SeverityHigh {
+		t.Fatalf("finding = %#v, want high action-wildcard finding", finding)
+	}
+}
+
+// WO-105@v3: correlate action, resource, and condition evidence within each Allow statement.
+func TestPolicyScanner_WildcardSeverityMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		want     iam.Severity
+	}{
+		{
+			name:     "admin equivalent",
+			document: `{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`,
+			want:     iam.SeverityCritical,
+		},
+		{
+			name:     "full action concrete resource",
+			document: `{"Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::bucket/*"}]}`,
+			want:     iam.SeverityHigh,
+		},
+		{
+			name:     "service wildcard unbounded",
+			document: `{"Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}`,
+			want:     iam.SeverityHigh,
+		},
+		{
+			name:     "service wildcard condition bounded",
+			document: `{"Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:SourceAccount":"123456789012"}}}]}`,
+			want:     iam.SeverityMedium,
+		},
+		{
+			name:     "service wildcard scoped",
+			document: `{"Statement":[{"Effect":"Allow","Action":"s3:Get*","Resource":"arn:aws:s3:::bucket/*"}]}`,
+			want:     iam.SeverityMedium,
+		},
+		{
+			name:     "sensitive action wildcard resource",
+			document: `{"Statement":[{"Effect":"Allow","Action":"iam:PassRole","Resource":"*"}]}`,
+			want:     iam.SeverityHigh,
+		},
+		{
+			name:     "narrow action wildcard resource",
+			document: `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}`,
+			want:     iam.SeverityMedium,
+		},
+		{
+			name: "split statements cannot synthesize admin",
+			document: `{"Statement":[` +
+				`{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::bucket/*"},` +
+				`{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}` +
+				`]}`,
+			want: iam.SeverityHigh,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := scanPolicyDocument(t, test.name, test.document)
+			finding := findFinding(result.Findings, iam.FindingWildcardPolicy)
+			if finding == nil || finding.Severity != test.want {
+				t.Fatalf("finding = %#v, want severity %s", finding, test.want)
+			}
+			if reason, ok := finding.Metadata["wildcard_risk_reason"].(string); !ok || reason == "" {
+				t.Fatalf("metadata = %#v, want wildcard risk reason", finding.Metadata)
+			}
+		})
 	}
 }
 
@@ -208,14 +278,15 @@ func TestPolicyDocument_InvalidCatalogApplicabilityIsIndeterminate(t *testing.T)
 // WO-65@v2: supported and unknown action evidence preserves the observed resource breadth.
 func TestPolicyScanner_ResourceApplicabilityPreservesWildcard(t *testing.T) {
 	tests := []struct {
-		name      string
-		action    string
-		wantState ResourceApplicabilityAssessmentState
+		name         string
+		action       string
+		wantState    ResourceApplicabilityAssessmentState
+		wantSeverity iam.Severity
 	}{
-		{"supported", "ssm:GetDocument", ResourceApplicabilityDeterminate},
-		{"unknown", "ssm:UnknownAction", ResourceApplicabilityIndeterminate},
-		{"glob", "ssm:Describe*", ResourceApplicabilityIndeterminate},
-		{"mixed", `["ssm:DescribeActivations","ssm:GetDocument"]`, ResourceApplicabilityDeterminate},
+		{"supported", "ssm:GetDocument", ResourceApplicabilityDeterminate, iam.SeverityMedium},
+		{"unknown", "ssm:UnknownAction", ResourceApplicabilityIndeterminate, iam.SeverityMedium},
+		{"glob", "ssm:Describe*", ResourceApplicabilityIndeterminate, iam.SeverityHigh},
+		{"mixed", `["ssm:DescribeActivations","ssm:GetDocument"]`, ResourceApplicabilityDeterminate, iam.SeverityMedium},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -234,6 +305,9 @@ func TestPolicyScanner_ResourceApplicabilityPreservesWildcard(t *testing.T) {
 			}
 			if finding.Metadata["resource_applicability_catalog_digest"] == "" {
 				t.Fatalf("metadata = %#v, want catalog digest", finding.Metadata)
+			}
+			if finding.Severity != tt.wantSeverity {
+				t.Fatalf("severity = %s, want %s", finding.Severity, tt.wantSeverity)
 			}
 		})
 	}

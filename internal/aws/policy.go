@@ -67,6 +67,7 @@ func (s *PolicyScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Scan
 	return result, nil
 }
 
+// WO-105@v3: grade detected wildcard evidence by its highest-risk correlated statement.
 func (s *PolicyScanner) checkWildcardPolicy(ctx context.Context, policy iamtypes.Policy, policyARN, policyName string, result *iam.ScanResult) {
 	if policy.DefaultVersionId == nil {
 		return
@@ -99,6 +100,7 @@ func (s *PolicyScanner) checkWildcardPolicy(ctx context.Context, policy iamtypes
 	if resourceApplicability.State == ResourceApplicabilityDeterminate && resourceApplicability.AllNone {
 		wildcardResource = false // WO-65@v2: Resource:* is mandatory syntax for actions with no resource type.
 	}
+	wildcardRisk := doc.assessWildcardRisk() // WO-105@v3: grade correlated statements instead of combining document-wide booleans.
 
 	if wildcardAction || wildcardResource {
 		condition := doc.AssessConditionBoundedness()
@@ -110,9 +112,14 @@ func (s *PolicyScanner) checkWildcardPolicy(ctx context.Context, policy iamtypes
 			wildcardType = "action and resource"
 		}
 
-		severity := iam.SeverityCritical
-		if !wildcardAction && condition.State == ConditionBounded {
-			severity = iam.SeverityHigh // WO-66@v2: a proved condition bound lowers only resource breadth.
+		severity := iam.SeverityHigh
+		switch wildcardRisk.level {
+		case wildcardRiskCritical:
+			severity = iam.SeverityCritical
+		case wildcardRiskMedium:
+			severity = iam.SeverityMedium
+		case wildcardRiskHigh, wildcardRiskNone:
+			// WO-105@v3: ungraded wildcard evidence remains high rather than becoming synthetic admin equivalence.
 		}
 
 		result.Findings = append(result.Findings, iam.Finding{
@@ -132,6 +139,7 @@ func (s *PolicyScanner) checkWildcardPolicy(ctx context.Context, policy iamtypes
 				"resource_applicability":                string(resourceApplicability.State), // WO-65@v2: record catalog proof state.
 				"resource_applicability_reason":         resourceApplicability.Reason,        // WO-65@v2: explain neutralization decisions.
 				"resource_applicability_catalog_digest": resourceApplicabilityCatalogDigest,  // WO-65@v2: bind evidence to its pinned source.
+				"wildcard_risk_reason":                  wildcardRisk.reason,                 // WO-105@v3: expose the correlated severity decision.
 			},
 		})
 	}
