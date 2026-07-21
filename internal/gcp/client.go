@@ -18,6 +18,7 @@ type IAMAPI interface {
 // ResourceManagerAPI defines the GCP Resource Manager operations needed.
 type ResourceManagerAPI interface {
 	GetIamPolicy(ctx context.Context, project string) (*crmv1.Policy, error)
+	GetProject(ctx context.Context, project string) (*crmv1.Project, error) // WO-83@v5: resolve provider-owned service-agent identity.
 }
 
 // Client wraps GCP API clients.
@@ -94,4 +95,13 @@ func (c *crmClient) GetIamPolicy(ctx context.Context, project string) (*crmv1.Po
 		return nil, fmt.Errorf("get project IAM policy: %w", err)
 	}
 	return policy, nil
+}
+
+// WO-83@v5: GetProject retrieves the immutable numeric ID used by managed service agents.
+func (c *crmClient) GetProject(ctx context.Context, project string) (*crmv1.Project, error) {
+	metadata, err := c.svc.Projects.Get(project).Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("get project metadata: %w", err)
+	}
+	return metadata, nil
 }

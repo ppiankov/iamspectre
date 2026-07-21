@@ -26,6 +26,10 @@ func RunScanners(ctx context.Context, scanners []Scanner, cfg ScanConfig) (*Scan
 		g.Go(func() error {
 			slog.Debug("Running scanner", "type", scanner.Type())
 			result, err := scanner.Scan(scanCtx, cfg)
+			// WO-87: merge independently acquired evidence before recording a sibling source failure.
+			if result != nil {
+				mergeScanResult(&mu, &combined, observedPrincipalIDs, &principalIdentityAccountingComplete, result)
+			}
 			if err != nil {
 				recordScannerError(&mu, &combined, &principalIdentityAccountingComplete, scanner, err)
 				return nil
@@ -34,19 +38,6 @@ func RunScanners(ctx context.Context, scanners []Scanner, cfg ScanConfig) (*Scan
 				recordScannerError(&mu, &combined, &principalIdentityAccountingComplete, scanner, fmt.Errorf("scanner returned nil result"))
 				return nil
 			}
-			mu.Lock()
-			combined.Findings = append(combined.Findings, result.Findings...)
-			combined.Errors = append(combined.Errors, result.Errors...)
-			combined.CoverageGaps = append(combined.CoverageGaps, result.CoverageGaps...) // WO-70@v4: preserve the independent coverage plane.
-			combined.PrincipalsScanned += result.PrincipalsScanned
-			// WO-89@v4: the union is authoritative only when every participant proves complete accounting.
-			if !result.PrincipalIdentityAccountingComplete || len(result.ObservedPrincipalIDs) != result.PrincipalsScanned {
-				principalIdentityAccountingComplete = false
-			}
-			for principalID := range result.ObservedPrincipalIDs {
-				observedPrincipalIDs[principalID] = struct{}{}
-			}
-			mu.Unlock()
 			return nil
 		})
 	}
@@ -58,6 +49,23 @@ func RunScanners(ctx context.Context, scanners []Scanner, cfg ScanConfig) (*Scan
 		combined.PrincipalsScanned = len(observedPrincipalIDs)
 	}
 	return &combined, nil
+}
+
+// WO-87: merge all result planes even when the same scanner also reports an error.
+func mergeScanResult(mu *sync.Mutex, combined *ScanResult, observedPrincipalIDs map[string]struct{}, principalIdentityAccountingComplete *bool, result *ScanResult) {
+	mu.Lock()
+	combined.Findings = append(combined.Findings, result.Findings...)
+	combined.Errors = append(combined.Errors, result.Errors...)
+	combined.CoverageGaps = append(combined.CoverageGaps, result.CoverageGaps...) // WO-70@v4: preserve the independent coverage plane.
+	combined.PrincipalsScanned += result.PrincipalsScanned
+	// WO-89@v4: the union is authoritative only when every participant proves complete accounting.
+	if !result.PrincipalIdentityAccountingComplete || len(result.ObservedPrincipalIDs) != result.PrincipalsScanned {
+		*principalIdentityAccountingComplete = false
+	}
+	for principalID := range result.ObservedPrincipalIDs {
+		observedPrincipalIDs[principalID] = struct{}{}
+	}
+	mu.Unlock()
 }
 
 // WO-26@v2: serialize type-prefixed failure recording while sibling scanners continue.

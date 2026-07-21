@@ -246,8 +246,12 @@ func TestAnalyzeAndReportJSON(t *testing.T) {
 		cloud: "aws", targetType: "aws-account", targetID: "prod", staleDays: 30,
 		severityMin: "high", format: "json", outputFile: path, timestamp: wantTime,
 	})
-	if err != nil {
-		t.Fatalf("analyzeAndReport: %v", err)
+	if !errors.Is(err, ErrIncompleteScan) {
+		t.Fatalf("analyzeAndReport error = %v, want incomplete scan", err)
+	}
+	var incomplete *IncompleteScanError
+	if !errors.As(err, &incomplete) || incomplete.ErrorCount != 1 {
+		t.Fatalf("typed incomplete error = %#v", incomplete)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -266,6 +270,9 @@ func TestAnalyzeAndReportJSON(t *testing.T) {
 	}
 	if errorsValue, ok := decoded["errors"].([]any); !ok || len(errorsValue) != 1 || errorsValue[0] != "scan warning" {
 		t.Fatalf("errors = %#v, want scan warning", decoded["errors"])
+	}
+	if decoded["status"] != "partial" {
+		t.Fatalf("status = %#v, want partial", decoded["status"])
 	}
 	coverage, ok := decoded["coverage_manifest"].(map[string]any)
 	if !ok || coverage["unique_missing_capabilities"] != float64(1) {
@@ -381,10 +388,10 @@ func TestAnalyzeAndReportReportAcrossProviders(t *testing.T) {
 // WO-25@v2: preserve reporter generation errors.
 func TestAnalyzeAndReportGenerationFailure(t *testing.T) {
 	want := errors.New("write failed")
-	err := analyzeAndReport(&iam.ScanResult{}, postScanOptions{
+	err := analyzeAndReport(&iam.ScanResult{Errors: []string{"scanner failed"}}, postScanOptions{
 		format: "json", severityMin: "low", writer: failingWriter{err: want},
 	})
-	if !errors.Is(err, want) {
+	if !errors.Is(err, want) || errors.Is(err, ErrIncompleteScan) {
 		t.Fatalf("error = %v, want %v", err, want)
 	}
 }
@@ -393,11 +400,11 @@ func TestAnalyzeAndReportGenerationFailure(t *testing.T) {
 func TestAnalyzeAndReportCloseFailure(t *testing.T) {
 	want := errors.New("close failed")
 	output := &closeErrorWriter{err: want}
-	err := analyzeAndReport(&iam.ScanResult{}, postScanOptions{
+	err := analyzeAndReport(&iam.ScanResult{Errors: []string{"scanner failed"}}, postScanOptions{
 		format: "json", severityMin: "low", outputFile: "ignored",
 		openOutput: func(string) (io.WriteCloser, error) { return output, nil },
 	})
-	if !errors.Is(err, want) {
+	if !errors.Is(err, want) || errors.Is(err, ErrIncompleteScan) {
 		t.Fatalf("error = %v, want %v", err, want)
 	}
 }

@@ -81,6 +81,24 @@ func TestCRMClientGetIAMPolicy(t *testing.T) {
 	}
 }
 
+// WO-83@v5: pin the authoritative project-number lookup used for managed-agent identity.
+func TestCRMClientGetProject(t *testing.T) {
+	_, crmService := newGCPTestServices(t, func(request *http.Request) *http.Response {
+		if request.Method != http.MethodGet || request.URL.Path != "/v1/projects/test-project" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.String())
+		}
+		return jsonResponse(http.StatusOK, `{"projectId":"test-project","projectNumber":"123456789"}`)
+	})
+
+	project, err := (&crmClient{svc: crmService}).GetProject(context.Background(), "test-project")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.ProjectNumber != testProjectNumber {
+		t.Fatalf("project number = %d, want %d", project.ProjectNumber, testProjectNumber)
+	}
+}
+
 // WO-99@v1: retain stable adapter context when the provider rejects any request.
 func TestGCPClientAdaptersWrapProviderErrors(t *testing.T) {
 	iamService, crmService := newGCPTestServices(t, func(*http.Request) *http.Response {
@@ -115,6 +133,14 @@ func TestGCPClientAdaptersWrapProviderErrors(t *testing.T) {
 				return err
 			},
 			wantPrefix: "get project IAM policy:",
+		},
+		{
+			name: "project metadata",
+			call: func() error {
+				_, err := (&crmClient{svc: crmService}).GetProject(context.Background(), "test-project")
+				return err
+			},
+			wantPrefix: "get project metadata:",
 		},
 	}
 

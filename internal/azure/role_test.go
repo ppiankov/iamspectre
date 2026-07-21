@@ -102,6 +102,33 @@ func TestRoleScanner_NilActivityMap(t *testing.T) {
 	}
 }
 
+// WO-81@v4: source-wide user gating must not relabel unrelated principal evidence.
+func TestRoleScanner_GroupsUnknownCoverageByPrincipalCause(t *testing.T) {
+	mock := &mockGraph{roleAssigns: []DirectoryRoleAssignment{
+		{ID: "user-assignment", PrincipalID: "user-1"},
+		{ID: "sp-assignment", PrincipalID: "sp-1"},
+	}}
+	scanner := NewRoleScannerWithActivityCauses(mock, map[string]PrincipalActivityState{
+		"user-1": PrincipalActivityUnknown,
+		"sp-1":   PrincipalActivityUnknown,
+	}, "azure-tenant:tenant-a", map[string]string{"user-1": userActivityPermissionDeniedCause})
+
+	result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.CoverageGaps) != 2 {
+		t.Fatalf("coverage gaps = %#v", result.CoverageGaps)
+	}
+	causes := map[string]int{}
+	for _, gap := range result.CoverageGaps {
+		causes[gap.Cause] += gap.AffectedCount
+	}
+	if causes[userActivityPermissionDeniedCause] != 1 || causes["principal_activity_unknown"] != 1 {
+		t.Fatalf("coverage causes = %#v", causes)
+	}
+}
+
 func TestRoleScanner_Excluded(t *testing.T) {
 	mock := &mockGraph{
 		roleAssigns: []DirectoryRoleAssignment{

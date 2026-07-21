@@ -2,8 +2,10 @@ package azure
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/ppiankov/iamspectre/internal/iam"
@@ -24,27 +26,77 @@ func NewAzureScanner(client *Client, scanCfg iam.ScanConfig) *AzureScanner {
 }
 
 // ScanAll runs all Azure AD IAM scanners and returns combined results.
+// WO-81@v4: fetch base users and protected activity through independent evidence boundaries.
 func (s *AzureScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 	slog.Info("Scanning Azure AD tenant", "tenant_id", s.client.TenantID)
 
 	// Pre-fetch shared data (like AWS credential report).
 	users, usersErr := s.client.Graph.ListUsers(ctx)
+	var userActivities []UserSignInActivity
+	var userActivityErr error
+	if usersErr == nil {
+		// WO-81@v4: authorization for protected activity can no longer erase the base inventory.
+		userActivities, userActivityErr = s.client.Graph.ListUserSignInActivities(ctx)
+		users = joinUserSignInActivity(users, userActivities)
+	}
+	userActivityCause := classifyUserActivityError(userActivityErr)
 	sps, spsErr := s.client.Graph.ListServicePrincipals(ctx)
 	spActivities, spActivityErr := s.client.Graph.ListServicePrincipalSignInActivities(ctx) // WO-68@v3: fetch the separate beta report.
 	sps, spCoverage := joinServicePrincipalActivity(sps, spActivities, spActivityErr, s.client.TenantID, s.scanCfg)
 
 	// Build principal activity map for role scanner.
 	principalActivity := buildPrincipalActivityMap(users, sps, s.scanCfg.StaleDays)
+	roleActivityCauses := make(map[string]string)
+	if userActivityErr != nil {
+		// WO-81@v4: attribute the user-source failure only to principals from that source.
+		for _, user := range users {
+			roleActivityCauses[user.ID] = userActivityCause
+		}
+	}
 
 	scanners := []iam.Scanner{
-		NewUserScannerWithScope(s.client.Graph, users, usersErr, "azure-tenant:"+s.client.TenantID), // WO-77: scope missing user activity evidence to this tenant.
+		NewUserScannerWithActivityEvidence(s.client.Graph, users, usersErr, userActivityErr, userActivityCause, "azure-tenant:"+s.client.TenantID), // WO-81@v4: preserve base users and typed activity degradation.
 		NewAppScanner(s.client.Graph),
 		NewServicePrincipalScannerWithActivityCoverage(s.client.Graph, sps, spsErr, spActivityErr, spCoverage),
-		NewRoleScannerWithScope(s.client.Graph, principalActivity, "azure-tenant:"+s.client.TenantID), // WO-73@v1: bind unknown role evidence to tenant scope.
+		NewRoleScannerWithActivityCauses(s.client.Graph, principalActivity, "azure-tenant:"+s.client.TenantID, roleActivityCauses), // WO-81@v4: preserve principal-scoped activity causes in role coverage.
 	}
 
 	// WO-26@v2: provider setup stays local while orchestration policy is shared.
 	return iam.RunScanners(ctx, scanners, s.scanCfg)
+}
+
+// WO-81@v4: join protected activity by immutable user ID without trusting base-response enrichment.
+func joinUserSignInActivity(users []User, activities []UserSignInActivity) []User {
+	joined := append([]User(nil), users...)
+	byUserID := make(map[string]*SignInActivity, len(activities))
+	for _, activity := range activities {
+		if activity.ID != "" {
+			byUserID[activity.ID] = activity.SignInActivity
+		}
+	}
+	for index := range joined {
+		joined[index].SignInActivity = byUserID[joined[index].ID]
+	}
+	return joined
+}
+
+// WO-81@v4: classify only known Graph gating failures; every other failure stays explicitly incomplete.
+func classifyUserActivityError(err error) string {
+	if err == nil {
+		return userActivityUnknownCause
+	}
+	var graphErr *GraphHTTPError
+	if !errors.As(err, &graphErr) || graphErr.StatusCode != http.StatusForbidden {
+		return userActivitySourceUnavailable
+	}
+	switch graphErr.Code {
+	case "Authorization_RequestDenied":
+		return userActivityPermissionDeniedCause
+	case "Authentication_RequestFromNonPremiumTenantOrB2CTenant":
+		return userActivityPremiumRequiredCause
+	default:
+		return userActivitySourceUnavailable
+	}
 }
 
 // WO-68@v3: join authoritative report rows by appId and report unknown evidence once per tenant.

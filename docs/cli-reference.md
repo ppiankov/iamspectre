@@ -126,7 +126,7 @@ IAMSpectre requires read-only access. Run `iamspectre init` to generate the mini
 ### GCP
 
 - `iam.serviceAccounts.list`, `iam.serviceAccountKeys.list`
-- `resourcemanager.projects.getIamPolicy`
+- `resourcemanager.projects.get`, `resourcemanager.projects.getIamPolicy`
 
 ### Azure
 

@@ -61,6 +61,43 @@ func TestRunScannersAggregatesAndContinues(t *testing.T) {
 	}
 }
 
+// WO-87: a scanner error must not erase independently acquired evidence.
+func TestRunScannersPreservesResultReturnedWithError(t *testing.T) {
+	result, err := RunScanners(context.Background(), []Scanner{
+		runnerScanner{typeID: ResourceAzureUser, result: &ScanResult{
+			Findings:          []Finding{{ID: FindingNoMFA}},
+			Errors:            []string{"security defaults: denied"},
+			CoverageGaps:      []CoverageGapObservation{{Capability: "activity", FindingID: FindingStaleUser}},
+			PrincipalsScanned: 2,
+		}, err: errors.New("fetch users: denied")},
+	}, ScanConfig{})
+	if err != nil {
+		t.Fatalf("RunScanners: %v", err)
+	}
+	if len(result.Findings) != 1 || len(result.CoverageGaps) != 1 || result.PrincipalsScanned != 2 {
+		t.Fatalf("result-plus-error evidence was lost: %#v", result)
+	}
+	joined := strings.Join(result.Errors, "|")
+	for _, want := range []string{"security defaults: denied", "azure_user: fetch users: denied"} {
+		if strings.Count(joined, want) != 1 {
+			t.Fatalf("errors %q contain %q %d times, want once", joined, want, strings.Count(joined, want))
+		}
+	}
+}
+
+// WO-87: a nil result with a real error records only the real scanner failure.
+func TestRunScannersNilResultWithErrorDoesNotAddNilResultError(t *testing.T) {
+	result, err := RunScanners(context.Background(), []Scanner{
+		runnerScanner{typeID: ResourceAzureUser, err: errors.New("denied")},
+	}, ScanConfig{})
+	if err != nil {
+		t.Fatalf("RunScanners: %v", err)
+	}
+	if got := strings.Join(result.Errors, "|"); got != "azure_user: denied" {
+		t.Fatalf("errors = %q, want only scanner error", got)
+	}
+}
+
 // WO-26@v2: keep the empty scanner set zero-value safe.
 func TestRunScannersEmpty(t *testing.T) {
 	result, err := RunScanners(context.Background(), nil, ScanConfig{})

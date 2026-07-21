@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,77 @@ func TestAzureScanner_UserActivityCoverageUsesTenantScope(t *testing.T) {
 	gap := findCoverageGap(result.CoverageGaps, iam.FindingStaleUser)
 	if gap == nil || gap.Scope != "azure-tenant:tenant-a" || gap.AffectedCount != 1 {
 		t.Fatalf("user activity coverage = %#v", gap)
+	}
+}
+
+// WO-81@v4: protected activity failures retain base checks and expose an exact coverage cause.
+func TestAzureScanner_UserActivityAuthorizationDegradesWithoutErasingBaseUsers(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		code      string
+		wantCause string
+	}{
+		{name: "permission or role denied", status: http.StatusForbidden, code: "Authorization_RequestDenied", wantCause: "permission_or_role_denied"},
+		{name: "premium license required", status: http.StatusForbidden, code: "Authentication_RequestFromNonPremiumTenantOrB2CTenant", wantCause: "premium_license_required"},
+		{name: "non-gating server failure", status: http.StatusInternalServerError, code: "InternalServerError", wantCause: "activity_source_unavailable"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mock := &mockGraph{
+				users: []User{
+					{ID: "member-1", UserPrincipalName: "member@example.com", UserType: "Member"},
+					{ID: "guest-1", UserPrincipalName: "guest@example.com", UserType: "Guest"},
+				},
+				userActivityErr: &GraphHTTPError{StatusCode: test.status, Code: test.code, Message: "activity unavailable"},
+				roleAssigns:     []DirectoryRoleAssignment{{ID: "assignment-1", PrincipalID: "member-1"}},
+				secDefaults:     &SecurityDefaultsPolicy{IsEnabled: false},
+			}
+
+			result, err := NewAzureScanner(NewClientWith("tenant-a", mock), iam.ScanConfig{StaleDays: 90}).ScanAll(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if findFinding(result.Findings, iam.FindingNoMFA) == nil || findFinding(result.Findings, iam.FindingLegacyAuth) == nil {
+				t.Fatalf("base checks did not run: %#v", result.Findings)
+			}
+			for _, findingID := range []iam.FindingID{iam.FindingStaleUser, iam.FindingStaleGuestUser, iam.FindingUnusedRole} {
+				gap := findCoverageGap(result.CoverageGaps, findingID)
+				if gap == nil || gap.Cause != test.wantCause || gap.Scope != "azure-tenant:tenant-a" {
+					t.Fatalf("coverage for %s = %#v", findingID, gap)
+				}
+			}
+			if findFinding(result.Findings, iam.FindingStaleUser) != nil || findFinding(result.Findings, iam.FindingStaleGuestUser) != nil || findFinding(result.Findings, iam.FindingUnusedRole) != nil {
+				t.Fatalf("unavailable activity emitted activity-derived finding: %#v", result.Findings)
+			}
+			if got := strings.Join(result.Errors, "|"); !strings.Contains(got, test.code) {
+				t.Fatalf("activity diagnostic missing from errors: %q", got)
+			}
+		})
+	}
+}
+
+// WO-81@v4: authorized activity rows enrich every timestamp consumer without a gap.
+func TestAzureScanner_UserActivityJoinUsesCompleteEvidence(t *testing.T) {
+	oldInteractive := time.Now().AddDate(0, 0, -120)
+	recentSuccessful := time.Now().AddDate(0, 0, -2)
+	mock := &mockGraph{
+		users: []User{{ID: "user-1", UserPrincipalName: "member@example.com", UserType: "Member"}},
+		userActivities: []UserSignInActivity{{ID: "user-1", SignInActivity: &SignInActivity{
+			LastSignInDateTime: &oldInteractive, LastSuccessfulSignInDateTime: &recentSuccessful,
+		}}},
+		authMethods: map[string][]AuthenticationMethod{"user-1": {{ODataType: authenticatorMethodType}}},
+		roleAssigns: []DirectoryRoleAssignment{{ID: "assignment-1", PrincipalID: "user-1"}},
+		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+
+	result, err := NewAzureScanner(NewClientWith("tenant-a", mock), iam.ScanConfig{StaleDays: 90}).ScanAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 || len(result.Errors) != 0 || len(result.CoverageGaps) != 0 {
+		t.Fatalf("complete activity evidence produced diagnostics: %#v", result)
 	}
 }
 
@@ -135,12 +207,16 @@ func TestAzureScanner_ScanAll_Integration(t *testing.T) {
 				UserPrincipalName: "stale@example.com",
 				DisplayName:       "Stale User",
 				UserType:          "Member",
-				SignInActivity:    &SignInActivity{LastSignInDateTime: &lastSignIn},
 			},
 			{
 				ID: "inactive-principal", UserPrincipalName: "inactive@example.com", DisplayName: "Inactive",
-				UserType: "Member", SignInActivity: &SignInActivity{LastSignInDateTime: &lastSignIn},
+				UserType: "Member",
 			},
+		},
+		// WO-81@v4: integration activity arrives through the separately authorized query.
+		userActivities: []UserSignInActivity{
+			{ID: "user-1", SignInActivity: &SignInActivity{LastSignInDateTime: &lastSignIn}},
+			{ID: "inactive-principal", SignInActivity: &SignInActivity{LastSignInDateTime: &lastSignIn}},
 		},
 		apps: []Application{
 			{
