@@ -69,6 +69,146 @@ func TestRunScannersEmpty(t *testing.T) {
 	}
 }
 
+// WO-89: derive principal cardinality from the union only when every scanner supplies identities.
+func TestRunScannersUsesCompletePrincipalUnion(t *testing.T) {
+	scanners := []Scanner{
+		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
+			PrincipalsScanned: 2,
+			ObservedPrincipalIDs: map[string]struct{}{
+				"serviceAccount:one@example.com": {},
+				"serviceAccount:two@example.com": {},
+			},
+			PrincipalIdentityAccountingComplete: true,
+		}},
+		runnerScanner{typeID: ResourceIAMBinding, result: &ScanResult{
+			PrincipalsScanned: 2,
+			ObservedPrincipalIDs: map[string]struct{}{
+				"serviceAccount:two@example.com":   {},
+				"serviceAccount:three@example.com": {},
+			},
+			PrincipalIdentityAccountingComplete: true,
+		}},
+	}
+
+	result, err := RunScanners(context.Background(), scanners, ScanConfig{})
+	if err != nil {
+		t.Fatalf("RunScanners: %v", err)
+	}
+	if result.PrincipalsScanned != 3 {
+		t.Fatalf("principals scanned = %d, want union cardinality 3", result.PrincipalsScanned)
+	}
+}
+
+// WO-89: distinguish complete empty identity sets from scanners without identity accounting.
+func TestRunScannersCompleteEmptyPrincipalSet(t *testing.T) {
+	scanners := []Scanner{
+		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
+			ObservedPrincipalIDs:                map[string]struct{}{},
+			PrincipalIdentityAccountingComplete: true,
+		}},
+		runnerScanner{typeID: ResourceIAMBinding, result: &ScanResult{
+			PrincipalsScanned: 1,
+			ObservedPrincipalIDs: map[string]struct{}{
+				"serviceAccount:one@example.com": {},
+			},
+			PrincipalIdentityAccountingComplete: true,
+		}},
+	}
+
+	result, err := RunScanners(context.Background(), scanners, ScanConfig{})
+	if err != nil {
+		t.Fatalf("RunScanners: %v", err)
+	}
+	if result.PrincipalsScanned != 1 {
+		t.Fatalf("principals scanned = %d, want 1", result.PrincipalsScanned)
+	}
+}
+
+// WO-89: preserve additive compatibility when any scanner lacks the identity carrier.
+func TestRunScannersMixedIdentityAccountingUsesAdditiveFallback(t *testing.T) {
+	scanners := []Scanner{
+		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
+			PrincipalsScanned: 2,
+			ObservedPrincipalIDs: map[string]struct{}{
+				"serviceAccount:one@example.com": {},
+				"serviceAccount:two@example.com": {},
+			},
+			PrincipalIdentityAccountingComplete: true,
+		}},
+		runnerScanner{typeID: ResourceIAMUser, result: &ScanResult{PrincipalsScanned: 3}},
+	}
+
+	result, err := RunScanners(context.Background(), scanners, ScanConfig{})
+	if err != nil {
+		t.Fatalf("RunScanners: %v", err)
+	}
+	if result.PrincipalsScanned != 5 {
+		t.Fatalf("principals scanned = %d, want additive fallback 5", result.PrincipalsScanned)
+	}
+}
+
+// WO-89: a failed participant makes the union incomplete while retaining successful counts.
+func TestRunScannersFailureUsesAdditivePrincipalFallback(t *testing.T) {
+	scanners := []Scanner{
+		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
+			PrincipalsScanned: 2,
+			ObservedPrincipalIDs: map[string]struct{}{
+				"serviceAccount:one@example.com": {},
+				"serviceAccount:two@example.com": {},
+			},
+			PrincipalIdentityAccountingComplete: true,
+		}},
+		runnerScanner{typeID: ResourceIAMBinding, err: errors.New("failed")},
+	}
+
+	result, err := RunScanners(context.Background(), scanners, ScanConfig{})
+	if err != nil {
+		t.Fatalf("RunScanners: %v", err)
+	}
+	if result.PrincipalsScanned != 2 {
+		t.Fatalf("principals scanned = %d, want successful additive count 2", result.PrincipalsScanned)
+	}
+}
+
+// WO-89: a completeness claim cannot override a contradictory local count.
+func TestRunScannersMismatchedPrincipalCarrierUsesAdditiveFallback(t *testing.T) {
+	tests := []struct {
+		name       string
+		identities map[string]struct{}
+	}{
+		{name: "short carrier", identities: map[string]struct{}{"serviceAccount:one@example.com": {}}},
+		{name: "nil carrier"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scanners := []Scanner{
+				runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
+					PrincipalsScanned:                   2,
+					ObservedPrincipalIDs:                tt.identities,
+					PrincipalIdentityAccountingComplete: true,
+				}},
+				runnerScanner{typeID: ResourceIAMUser, result: &ScanResult{
+					PrincipalsScanned: 3,
+					ObservedPrincipalIDs: map[string]struct{}{
+						"user:one@example.com":   {},
+						"user:two@example.com":   {},
+						"user:three@example.com": {},
+					},
+					PrincipalIdentityAccountingComplete: true,
+				}},
+			}
+
+			result, err := RunScanners(context.Background(), scanners, ScanConfig{})
+			if err != nil {
+				t.Fatalf("RunScanners: %v", err)
+			}
+			if result.PrincipalsScanned != 5 {
+				t.Fatalf("principals scanned = %d, want additive fallback 5", result.PrincipalsScanned)
+			}
+		})
+	}
+}
+
 // WO-26@v2: prove the named worker bound without timing-dependent assertions.
 func TestRunScannersConcurrencyLimit(t *testing.T) {
 	const scannerCount = scannerConcurrencyLimit + 2

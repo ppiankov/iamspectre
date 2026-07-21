@@ -72,6 +72,42 @@ func TestGCPScanner_ScanAll(t *testing.T) {
 	if !hasOverpriv {
 		t.Fatal("expected OVERPRIVILEGED_SA finding")
 	}
+	if result.PrincipalsScanned != 1 {
+		t.Fatalf("principals scanned = %d, want one cross-scanner identity", result.PrincipalsScanned)
+	}
+}
+
+// WO-89: the aggregate count is the union of listed accounts and policy members.
+func TestGCPScanner_ScanAll_DeduplicatesPrincipalUnion(t *testing.T) {
+	mockIAMAPI := &mockIAM{
+		accounts: []*iamv1.ServiceAccount{
+			{Name: "projects/test/serviceAccounts/sa1", Email: "sa1@test.iam.gserviceaccount.com", UniqueId: "1"},
+			{Name: "projects/test/serviceAccounts/sa2", Email: "sa2@test.iam.gserviceaccount.com", UniqueId: "2"},
+		},
+		keys: map[string][]*iamv1.ServiceAccountKey{},
+	}
+	mockCRMAPI := &mockCRM{policy: &crmv1.Policy{Bindings: []*crmv1.Binding{
+		{
+			Role: "roles/viewer",
+			Members: []string{
+				"serviceAccount: SA2@Test.Iam.Gserviceaccount.Com ",
+				"serviceAccount:sa3@test.iam.gserviceaccount.com",
+				"serviceAccount:sa4@test.iam.gserviceaccount.com",
+			},
+		},
+	}}}
+
+	client := NewClientWith("test-project", mockIAMAPI, mockCRMAPI)
+	result, err := NewGCPScanner(client, iam.ScanConfig{StaleDays: 90}).ScanAll(context.Background())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if result.PrincipalsScanned != 4 {
+		t.Fatalf("principals scanned = %d, want union cardinality 4", result.PrincipalsScanned)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("viewer-only fixture emitted findings: %#v", result.Findings)
+	}
 }
 
 func TestGCPScanner_ScanAll_ScannerError(t *testing.T) {
