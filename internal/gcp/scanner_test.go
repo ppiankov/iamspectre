@@ -17,6 +17,7 @@ func TestScannerCount(t *testing.T) {
 	}
 }
 
+// WO-89@v4: cross-scanner aggregation counts one canonical identity only once.
 func TestGCPScanner_ScanAll(t *testing.T) {
 	staleTime := time.Now().AddDate(0, 0, -100).Format(time.RFC3339)
 

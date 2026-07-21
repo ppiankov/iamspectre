@@ -324,6 +324,7 @@ func TestGraphClient_SuccessBodyOwnership(t *testing.T) {
 // WO-84@v3: roundTripFunc keeps transport edge cases deterministic and network-free.
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
+// WO-84@v3: keep request transport behavior injectable for bounded Graph error tests.
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
@@ -334,6 +335,7 @@ type observedReadCloser struct {
 	closed bool
 }
 
+// WO-84@v3: record closure so retry and terminal response ownership stays provable.
 func (r *observedReadCloser) Close() error {
 	r.closed = true
 	return r.ReadCloser.Close()
@@ -342,8 +344,11 @@ func (r *observedReadCloser) Close() error {
 // WO-84@v3: failingReadCloser exercises the deterministic transport read fallback.
 type failingReadCloser struct{}
 
+// WO-84@v3: force a deterministic body-read failure without exposing response bytes.
 func (*failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("read failed") }
-func (*failingReadCloser) Close() error             { return nil }
+
+// WO-84@v3: make the synthetic read failure independently closeable.
+func (*failingReadCloser) Close() error { return nil }
 
 // WO-84@v3: build the smallest Graph client around a deterministic synthetic response.
 func graphClientForResponse(status int, body string, header http.Header) *graphClient {

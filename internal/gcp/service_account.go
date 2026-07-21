@@ -18,6 +18,7 @@ type ServiceAccountScanner struct {
 }
 
 // NewServiceAccountScanner creates a scanner for GCP service accounts.
+// WO-88@v4: default production scans to a real clock while retaining deterministic injection.
 func NewServiceAccountScanner(api IAMAPI, project string) *ServiceAccountScanner {
 	return &ServiceAccountScanner{api: api, project: project, now: time.Now}
 }

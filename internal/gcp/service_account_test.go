@@ -328,6 +328,7 @@ func TestServiceAccountScanner_DisabledWithStaleKey(t *testing.T) {
 	}
 }
 
+// WO-89@v4: a successful empty account list proves complete empty identity accounting.
 func TestServiceAccountScanner_NoAccounts(t *testing.T) {
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{},
@@ -382,6 +383,7 @@ func TestServiceAccountScanner_ListError(t *testing.T) {
 	}
 }
 
+// WO-92@v2: key-list failures retain principal evidence and emit an explicit inventory gap.
 func TestServiceAccountScanner_KeyListError(t *testing.T) {
 	mock := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{
@@ -527,6 +529,7 @@ func TestServiceAccountScanner_MalformedKeyTimestampsAggregateDeterministically(
 	}
 }
 
+// WO-89@v4: exclusions suppress findings without removing the account from identity evidence.
 func TestServiceAccountScanner_Excluded(t *testing.T) {
 	staleTime := time.Now().AddDate(0, 0, -100).Format(time.RFC3339)
 	mock := &mockIAM{

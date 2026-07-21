@@ -80,6 +80,7 @@ func TestBindingScanner_EditorRole(t *testing.T) {
 	}
 }
 
+// WO-89@v4: safe-role observations still contribute to complete principal accounting.
 func TestBindingScanner_SafeRole(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{
@@ -150,6 +151,7 @@ func TestBindingScanner_BlankServiceAccountMemberUsesIncompleteFallback(t *testi
 	}
 }
 
+// WO-89@v4: distinct policy members contribute distinct canonical principal identities.
 func TestBindingScanner_MultipleSAs(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{
@@ -191,6 +193,7 @@ func TestBindingScanner_MultipleSAs(t *testing.T) {
 	}
 }
 
+// WO-89@v4: exclusion suppresses findings without erasing an observed principal.
 func TestBindingScanner_Excluded(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{
@@ -233,6 +236,7 @@ func TestBindingScanner_GetPolicyError(t *testing.T) {
 	}
 }
 
+// WO-89@v4: an empty successful policy read proves a complete empty identity set.
 func TestBindingScanner_EmptyPolicy(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{},
