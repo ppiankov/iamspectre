@@ -77,7 +77,7 @@ func TestGCPScanner_ScanAll(t *testing.T) {
 	}
 }
 
-// WO-89: the aggregate count is the union of listed accounts and policy members.
+// WO-89@v4: the aggregate count is the union of listed accounts and policy members.
 func TestGCPScanner_ScanAll_DeduplicatesPrincipalUnion(t *testing.T) {
 	mockIAMAPI := &mockIAM{
 		accounts: []*iamv1.ServiceAccount{

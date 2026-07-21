@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// WO-91: emit the shared formatted payload without Cobra's default extra "version" word.
+// WO-91@v2: emit the shared formatted payload without Cobra's default extra "version" word.
 const rootVersionTemplate = "{{.Version}}"
 
 var (
@@ -44,7 +44,7 @@ func Execute(v, c, d string) error {
 	version = v
 	commit = c
 	date = d
-	// WO-91: setting Version before Execute enables root-local --version and -v handling.
+	// WO-91@v2: setting Version before Execute enables root-local --version and -v handling.
 	rootCmd.Version = formatVersionLine(v, c, d)
 	rootCmd.SetVersionTemplate(rootVersionTemplate)
 	return rootCmd.Execute()

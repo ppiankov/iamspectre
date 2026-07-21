@@ -170,8 +170,8 @@ type ScanResult struct {
 	Errors                              []string                 `json:"errors,omitempty"`
 	CoverageGaps                        []CoverageGapObservation `json:"coverage_gaps,omitempty"` // WO-70@v4: keep missing evidence separate from actionable findings.
 	PrincipalsScanned                   int                      `json:"principals_scanned"`
-	ObservedPrincipalIDs                map[string]struct{}      `json:"-"` // WO-89: carry identities only far enough to compute cross-scanner cardinality.
-	PrincipalIdentityAccountingComplete bool                     `json:"-"` // WO-89: distinguish a complete empty set from unsupported accounting.
+	ObservedPrincipalIDs                map[string]struct{}      `json:"-"` // WO-89@v4: carry identities only far enough to compute cross-scanner cardinality.
+	PrincipalIdentityAccountingComplete bool                     `json:"-"` // WO-89@v4: distinguish a complete empty set from unsupported accounting.
 }
 
 // WO-70@v4: CoverageGapObservation records one unevaluable check without fabricating a finding.

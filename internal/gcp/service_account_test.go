@@ -15,9 +15,9 @@ import (
 	iamv1 "google.golang.org/api/iam/v1"
 )
 
-var serviceAccountTestNow = time.Date(2026, time.July, 21, 0, 0, 0, 0, time.UTC) // WO-88: pin all new key-age evidence.
+var serviceAccountTestNow = time.Date(2026, time.July, 21, 0, 0, 0, 0, time.UTC) // WO-88@v4: pin all new key-age evidence.
 
-// WO-88: construct scanners with a deterministic assessment clock.
+// WO-88@v4: construct scanners with a deterministic assessment clock.
 func fixedServiceAccountScanner(api IAMAPI, project string) *ServiceAccountScanner {
 	scanner := NewServiceAccountScanner(api, project)
 	scanner.now = func() time.Time { return serviceAccountTestNow }
@@ -50,7 +50,7 @@ func (m *mockIAM) ListServiceAccountKeys(_ context.Context, name string) ([]*iam
 	return nil, nil
 }
 
-// WO-88: enabled stale keys carry a complete evidence-limited Medium assessment.
+// WO-88@v4: enabled stale keys carry a complete evidence-limited Medium assessment.
 func TestServiceAccountScanner_StaleSAKey(t *testing.T) {
 	staleTime := serviceAccountTestNow.AddDate(0, 0, -91).Format(time.RFC3339)
 	mock := &mockIAM{
@@ -116,7 +116,7 @@ func TestServiceAccountScanner_StaleSAKey(t *testing.T) {
 	}
 }
 
-// WO-88: the shared cutoff is strict; equality is not stale.
+// WO-88@v4: the shared cutoff is strict; equality is not stale.
 func TestServiceAccountScanner_StaleKeyThresholdBoundary(t *testing.T) {
 	threshold := serviceAccountTestNow.AddDate(0, 0, -90)
 	tests := []struct {
@@ -148,7 +148,7 @@ func TestServiceAccountScanner_StaleKeyThresholdBoundary(t *testing.T) {
 	}
 }
 
-// WO-88: every account in one scan must share a single evidence timestamp.
+// WO-88@v4: every account in one scan must share a single evidence timestamp.
 func TestServiceAccountScanner_UsesSingleScanClock(t *testing.T) {
 	threshold := serviceAccountTestNow.AddDate(0, 0, -90)
 	accounts := []*iamv1.ServiceAccount{
@@ -350,7 +350,7 @@ func TestServiceAccountScanner_NoAccounts(t *testing.T) {
 	}
 }
 
-// WO-89: missing provider identity data cannot become a synthetic union member.
+// WO-89@v4: missing provider identity data cannot become a synthetic union member.
 func TestServiceAccountScanner_BlankEmailUsesIncompleteFallback(t *testing.T) {
 	accountName := "projects/test/serviceAccounts/blank"
 	mock := &mockIAM{
@@ -414,7 +414,7 @@ func TestServiceAccountScanner_KeyListError(t *testing.T) {
 	}
 }
 
-// WO-92: account-order changes cannot alter merged key-inventory coverage totals.
+// WO-92@v2: account-order changes cannot alter merged key-inventory coverage totals.
 func TestServiceAccountScanner_KeyListErrorsAggregateDeterministically(t *testing.T) {
 	account := func(id string) *iamv1.ServiceAccount {
 		return &iamv1.ServiceAccount{
@@ -450,7 +450,7 @@ func TestServiceAccountScanner_KeyListErrorsAggregateDeterministically(t *testin
 	}
 }
 
-// WO-90: malformed enabled-key timestamps are explicit gaps and never leak raw evidence.
+// WO-90@v2: malformed enabled-key timestamps are explicit gaps and never leak raw evidence.
 func TestServiceAccountScanner_MalformedKeyTimestamp(t *testing.T) {
 	const malformed = "malformed-private-timestamp"
 	accountName := "projects/test/serviceAccounts/sa1"
@@ -498,7 +498,7 @@ func TestServiceAccountScanner_MalformedKeyTimestamp(t *testing.T) {
 	}
 }
 
-// WO-90: repeated malformed timestamps retain denominators independent of input order.
+// WO-90@v2: repeated malformed timestamps retain denominators independent of input order.
 func TestServiceAccountScanner_MalformedKeyTimestampsAggregateDeterministically(t *testing.T) {
 	accountName := "projects/test/serviceAccounts/sa1"
 	key := func(name string) *iamv1.ServiceAccountKey {

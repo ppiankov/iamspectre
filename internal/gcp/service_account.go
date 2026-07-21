@@ -14,7 +14,7 @@ import (
 type ServiceAccountScanner struct {
 	api     IAMAPI
 	project string
-	now     func() time.Time // WO-88: inject the assessment clock so threshold evidence is reproducible.
+	now     func() time.Time // WO-88@v4: inject the assessment clock so threshold evidence is reproducible.
 }
 
 // NewServiceAccountScanner creates a scanner for GCP service accounts.
@@ -34,19 +34,19 @@ func (s *ServiceAccountScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*
 		return nil, fmt.Errorf("list service accounts: %w", err)
 	}
 
-	// WO-89: a successful account list makes even an empty observed identity set complete.
+	// WO-89@v4: a successful account list makes even an empty observed identity set complete.
 	result := &iam.ScanResult{
 		ObservedPrincipalIDs:                make(map[string]struct{}, len(accounts)),
 		PrincipalIdentityAccountingComplete: true,
 	}
-	scanNow := s.now().UTC() // WO-88: one scan-wide instant prevents account-order boundary drift.
+	scanNow := s.now().UTC() // WO-88@v4: one scan-wide instant prevents account-order boundary drift.
 
 	for _, sa := range accounts {
 		principalID := canonicalServiceAccountPrincipalID(sa.Email)
 		if principalID == "" {
-			result.PrincipalIdentityAccountingComplete = false // WO-89: preserve fallback without inventing a namespace-only identity.
+			result.PrincipalIdentityAccountingComplete = false // WO-89@v4: preserve fallback without inventing a namespace-only identity.
 		} else {
-			result.ObservedPrincipalIDs[principalID] = struct{}{} // WO-89: count provider observations independently of finding filters.
+			result.ObservedPrincipalIDs[principalID] = struct{}{} // WO-89@v4: count provider observations independently of finding filters.
 		}
 		if iam.IsExcluded(cfg, sa.UniqueId, sa.Email) { // WO-14@v3: use the shared exclusion policy.
 			continue
@@ -75,7 +75,7 @@ func (s *ServiceAccountScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*
 		if err != nil {
 			slog.Warn("Failed to list keys", "service_account", sa.Email, "error", err)
 			result.Errors = append(result.Errors, fmt.Sprintf("list keys for %s: %v", sa.Email, err))
-			// WO-92: a failed key inventory is an explicit unevaluable stale-key opportunity.
+			// WO-92@v2: a failed key inventory is an explicit unevaluable stale-key opportunity.
 			result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
 				Capability:        "gcp_service_account_key_inventory",
 				Cause:             "list_keys_failed",
@@ -116,7 +116,7 @@ func (s *ServiceAccountScanner) checkKeys(sa *iamv1.ServiceAccount, keys []*iamv
 
 		created, err := time.Parse(time.RFC3339, key.ValidAfterTime)
 		if err != nil {
-			// WO-90: report incomplete evidence without echoing the malformed timestamp or parser text.
+			// WO-90@v2: report incomplete evidence without echoing the malformed timestamp or parser text.
 			result.Errors = append(result.Errors, fmt.Sprintf(
 				"service account key age unavailable for %s: invalid validAfterTime", key.Name,
 			))
@@ -149,13 +149,13 @@ func (s *ServiceAccountScanner) checkKeys(sa *iamv1.ServiceAccount, keys []*iamv
 				ResourceName:    sa.Email,
 				Message:         fmt.Sprintf("Service account key created %d days ago (threshold: %d days)", daysOld, cfg.StaleDays),
 				Recommendation:  "Rotate or delete the stale service account key",
-				EvidenceTier:    &evidenceTier,               // WO-88: age is a directly observed hygiene fact.
-				State:           iam.FindingStateDeterminate, // WO-88: the timestamp comparison itself is conclusive.
-				Reachability:    iam.ReachabilityUnknown,     // WO-88: age does not prove whether the credential is reachable.
-				Impact:          iam.SeverityMedium,          // WO-88: unsupported compromise claims cannot raise impact.
-				BlastRadius:     iam.BlastRadiusMedium,       // WO-88: no narrower or broader authorization scope was evaluated.
-				RubricVersion:   iam.RubricVersionV1,         // WO-88: bind the complete assessment to rubric v1.
-				EvaluatedLayers: evaluatedLayers,             // WO-88: all authorization layers remain unresolved.
+				EvidenceTier:    &evidenceTier,               // WO-88@v4: age is a directly observed hygiene fact.
+				State:           iam.FindingStateDeterminate, // WO-88@v4: the timestamp comparison itself is conclusive.
+				Reachability:    iam.ReachabilityUnknown,     // WO-88@v4: age does not prove whether the credential is reachable.
+				Impact:          iam.SeverityMedium,          // WO-88@v4: unsupported compromise claims cannot raise impact.
+				BlastRadius:     iam.BlastRadiusMedium,       // WO-88@v4: no narrower or broader authorization scope was evaluated.
+				RubricVersion:   iam.RubricVersionV1,         // WO-88@v4: bind the complete assessment to rubric v1.
+				EvaluatedLayers: evaluatedLayers,             // WO-88@v4: all authorization layers remain unresolved.
 				Metadata: map[string]any{
 					"service_account": sa.Email,
 					"key_created":     key.ValidAfterTime,

@@ -137,7 +137,7 @@ func TestGraphClient_ListServicePrincipalSignInActivities(t *testing.T) {
 	}
 }
 
-// WO-84: Graph authorization diagnostics must survive the public client's wrapping.
+// WO-84@v3: Graph authorization diagnostics must survive the public client's wrapping.
 func TestGraphClient_ListUsersPreservesGraphHTTPError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -170,7 +170,7 @@ func TestGraphClient_ListUsersPreservesGraphHTTPError(t *testing.T) {
 	}
 }
 
-// WO-84: invalid Graph bodies must collapse to one safe typed fallback.
+// WO-84@v3: invalid Graph bodies must collapse to one safe typed fallback.
 func TestGraphClient_ErrorBodyFallbacks(t *testing.T) {
 	oversized := strings.Repeat("x", maxGraphErrorBodyBytes+1)
 	tests := []struct {
@@ -216,7 +216,7 @@ func TestGraphClient_ErrorBodyFallbacks(t *testing.T) {
 	}
 }
 
-// WO-84: the body and text limits are byte-exact and preserve valid UTF-8.
+// WO-84@v3: the body and text limits are byte-exact and preserve valid UTF-8.
 func TestGraphClient_ErrorLimits(t *testing.T) {
 	base := []byte(`{"error":{"code":"accepted","message":"ok"}}`)
 	exact := append(base, bytes.Repeat([]byte(" "), maxGraphErrorBodyBytes-len(base))...)
@@ -248,7 +248,7 @@ func TestGraphClient_ErrorLimits(t *testing.T) {
 	}
 }
 
-// WO-84: only sanitized, bounded allowlisted Graph fields may reach diagnostics.
+// WO-84@v3: only sanitized, bounded allowlisted Graph fields may reach diagnostics.
 func TestGraphClient_ErrorSanitizesUntrustedValues(t *testing.T) {
 	body := `{"error":{"code":"Authorization_RequestDenied","message":"denied Bearer body-secret\u0000","innerError":{"request-id":"body\nBearer request-secret"}}}`
 	client := graphClientForResponse(http.StatusForbidden, body, http.Header{
@@ -270,7 +270,7 @@ func TestGraphClient_ErrorSanitizesUntrustedValues(t *testing.T) {
 	}
 }
 
-// WO-84: retry decisions precede decoding and every discarded 429 body is closed.
+// WO-84@v3: retry decisions precede decoding and every discarded 429 body is closed.
 func TestGraphClient_RetriesAndClosesRateLimitBodies(t *testing.T) {
 	var calls int
 	var previous *observedReadCloser
@@ -299,7 +299,7 @@ func TestGraphClient_RetriesAndClosesRateLimitBodies(t *testing.T) {
 	}
 }
 
-// WO-84: successful response body ownership remains with the caller.
+// WO-84@v3: successful response body ownership remains with the caller.
 func TestGraphClient_SuccessBodyOwnership(t *testing.T) {
 	body := &observedReadCloser{ReadCloser: io.NopCloser(strings.NewReader(`{"value":[]}`))}
 	client := graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -321,14 +321,14 @@ func TestGraphClient_SuccessBodyOwnership(t *testing.T) {
 	}
 }
 
-// WO-84: roundTripFunc keeps transport edge cases deterministic and network-free.
+// WO-84@v3: roundTripFunc keeps transport edge cases deterministic and network-free.
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
 
-// WO-84: observedReadCloser proves response body ownership on every status path.
+// WO-84@v3: observedReadCloser proves response body ownership on every status path.
 type observedReadCloser struct {
 	io.ReadCloser
 	closed bool
@@ -339,13 +339,13 @@ func (r *observedReadCloser) Close() error {
 	return r.ReadCloser.Close()
 }
 
-// WO-84: failingReadCloser exercises the deterministic transport read fallback.
+// WO-84@v3: failingReadCloser exercises the deterministic transport read fallback.
 type failingReadCloser struct{}
 
 func (*failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 func (*failingReadCloser) Close() error             { return nil }
 
-// WO-84: build the smallest Graph client around a deterministic synthetic response.
+// WO-84@v3: build the smallest Graph client around a deterministic synthetic response.
 func graphClientForResponse(status int, body string, header http.Header) *graphClient {
 	return graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -356,7 +356,7 @@ func graphClientForResponse(status int, body string, header http.Header) *graphC
 	}))
 }
 
-// WO-84: transport injection avoids widening production configuration for error tests.
+// WO-84@v3: transport injection avoids widening production configuration for error tests.
 func graphClientWithTransport(transport http.RoundTripper) *graphClient {
 	return &graphClient{
 		cred:   staticTokenCredential{},

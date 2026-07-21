@@ -69,7 +69,7 @@ func TestRunScannersEmpty(t *testing.T) {
 	}
 }
 
-// WO-89: derive principal cardinality from the union only when every scanner supplies identities.
+// WO-89@v4: derive principal cardinality from the union only when every scanner supplies identities.
 func TestRunScannersUsesCompletePrincipalUnion(t *testing.T) {
 	scanners := []Scanner{
 		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
@@ -99,7 +99,7 @@ func TestRunScannersUsesCompletePrincipalUnion(t *testing.T) {
 	}
 }
 
-// WO-89: distinguish complete empty identity sets from scanners without identity accounting.
+// WO-89@v4: distinguish complete empty identity sets from scanners without identity accounting.
 func TestRunScannersCompleteEmptyPrincipalSet(t *testing.T) {
 	scanners := []Scanner{
 		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
@@ -124,7 +124,7 @@ func TestRunScannersCompleteEmptyPrincipalSet(t *testing.T) {
 	}
 }
 
-// WO-89: preserve additive compatibility when any scanner lacks the identity carrier.
+// WO-89@v4: preserve additive compatibility when any scanner lacks the identity carrier.
 func TestRunScannersMixedIdentityAccountingUsesAdditiveFallback(t *testing.T) {
 	scanners := []Scanner{
 		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
@@ -147,7 +147,7 @@ func TestRunScannersMixedIdentityAccountingUsesAdditiveFallback(t *testing.T) {
 	}
 }
 
-// WO-89: a failed participant makes the union incomplete while retaining successful counts.
+// WO-89@v4: a failed participant makes the union incomplete while retaining successful counts.
 func TestRunScannersFailureUsesAdditivePrincipalFallback(t *testing.T) {
 	scanners := []Scanner{
 		runnerScanner{typeID: ResourceServiceAccount, result: &ScanResult{
@@ -170,7 +170,7 @@ func TestRunScannersFailureUsesAdditivePrincipalFallback(t *testing.T) {
 	}
 }
 
-// WO-89: a completeness claim cannot override a contradictory local count.
+// WO-89@v4: a completeness claim cannot override a contradictory local count.
 func TestRunScannersMismatchedPrincipalCarrierUsesAdditiveFallback(t *testing.T) {
 	tests := []struct {
 		name       string

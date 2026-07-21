@@ -39,7 +39,7 @@ func RunScanners(ctx context.Context, scanners []Scanner, cfg ScanConfig) (*Scan
 			combined.Errors = append(combined.Errors, result.Errors...)
 			combined.CoverageGaps = append(combined.CoverageGaps, result.CoverageGaps...) // WO-70@v4: preserve the independent coverage plane.
 			combined.PrincipalsScanned += result.PrincipalsScanned
-			// WO-89: the union is authoritative only when every participant proves complete accounting.
+			// WO-89@v4: the union is authoritative only when every participant proves complete accounting.
 			if !result.PrincipalIdentityAccountingComplete || len(result.ObservedPrincipalIDs) != result.PrincipalsScanned {
 				principalIdentityAccountingComplete = false
 			}
@@ -53,7 +53,7 @@ func RunScanners(ctx context.Context, scanners []Scanner, cfg ScanConfig) (*Scan
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	// WO-89: derive cardinality only after all concurrent identity sets are complete.
+	// WO-89@v4: derive cardinality only after all concurrent identity sets are complete.
 	if principalIdentityAccountingComplete {
 		combined.PrincipalsScanned = len(observedPrincipalIDs)
 	}
@@ -64,7 +64,7 @@ func RunScanners(ctx context.Context, scanners []Scanner, cfg ScanConfig) (*Scan
 func recordScannerError(mu *sync.Mutex, combined *ScanResult, principalIdentityAccountingComplete *bool, scanner Scanner, err error) {
 	mu.Lock()
 	combined.Errors = append(combined.Errors, fmt.Sprintf("%s: %v", scanner.Type(), err))
-	*principalIdentityAccountingComplete = false // WO-89: failed scanners cannot prove complete union membership.
+	*principalIdentityAccountingComplete = false // WO-89@v4: failed scanners cannot prove complete union membership.
 	mu.Unlock()
 	slog.Warn("Scanner failed", "type", scanner.Type(), "error", err)
 }

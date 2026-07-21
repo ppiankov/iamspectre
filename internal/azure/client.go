@@ -22,13 +22,13 @@ import (
 const (
 	graphBaseURL = "https://graph.microsoft.com/v1.0"
 
-	// WO-84: bound transport reads independently from diagnostic text retention.
+	// WO-84@v3: bound transport reads independently from diagnostic text retention.
 	maxGraphErrorBodyBytes = 64 * 1024
-	// WO-84: bound each stored field and the combined Graph-sourced diagnostic.
+	// WO-84@v3: bound each stored field and the combined Graph-sourced diagnostic.
 	maxGraphErrorTextBytes = 4 * 1024
 )
 
-// WO-84: redact bearer credentials before retaining any Graph-sourced text.
+// WO-84@v3: redact bearer credentials before retaining any Graph-sourced text.
 var bearerCredentialPattern = regexp.MustCompile(`(?i)\bbearer[ \t]+[A-Za-z0-9._~+/=-]+`)
 
 // WO-68@v3: service-principal activity is available only from the Microsoft Graph beta reports surface.
@@ -54,7 +54,7 @@ type Client struct {
 	TenantID string
 }
 
-// WO-84: GraphHTTPError preserves only bounded, diagnostic-safe Graph error fields.
+// WO-84@v3: GraphHTTPError preserves only bounded, diagnostic-safe Graph error fields.
 type GraphHTTPError struct {
 	StatusCode      int
 	Code            string
@@ -63,7 +63,7 @@ type GraphHTTPError struct {
 	ClientRequestID string
 }
 
-// WO-84: Error omits URLs, bodies, headers, and credentials from operator output.
+// WO-84@v3: Error omits URLs, bodies, headers, and credentials from operator output.
 func (e *GraphHTTPError) Error() string {
 	if e == nil {
 		return "graph API returned an unknown status"
@@ -91,7 +91,7 @@ func (e *GraphHTTPError) Error() string {
 	return base + ": " + detail
 }
 
-// WO-84: graphErrorEnvelope allowlists the only response fields diagnostics retain.
+// WO-84@v3: graphErrorEnvelope allowlists the only response fields diagnostics retain.
 type graphErrorEnvelope struct {
 	Error struct {
 		Code       string `json:"code"`
@@ -255,7 +255,7 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries-1 {
-			// WO-84: decide the retry before decoding and close the discarded body before waiting.
+			// WO-84@v3: decide the retry before decoding and close the discarded body before waiting.
 			_ = resp.Body.Close()
 			retryAfter := 5
 			if v := resp.Header.Get("Retry-After"); v != "" {
@@ -272,7 +272,7 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 			continue
 		}
 
-		// WO-84: terminal transport errors retain only allowlisted, bounded diagnostics.
+		// WO-84@v3: terminal transport errors retain only allowlisted, bounded diagnostics.
 		graphErr := decodeGraphHTTPError(resp)
 		_ = resp.Body.Close()
 		return nil, graphErr
@@ -281,7 +281,7 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 	return nil, fmt.Errorf("graph API retry limit exhausted")
 }
 
-// WO-84: decodeGraphHTTPError returns the same status-only fallback for unsafe bodies.
+// WO-84@v3: decodeGraphHTTPError returns the same status-only fallback for unsafe bodies.
 func decodeGraphHTTPError(resp *http.Response) *GraphHTTPError {
 	result := &GraphHTTPError{StatusCode: resp.StatusCode}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGraphErrorBodyBytes+1))
@@ -307,7 +307,7 @@ func decodeGraphHTTPError(resp *http.Response) *GraphHTTPError {
 	return result
 }
 
-// WO-84: sanitizeGraphErrorText removes controls and credentials before truncation.
+// WO-84@v3: sanitizeGraphErrorText removes controls and credentials before truncation.
 func sanitizeGraphErrorText(value string) string {
 	value = strings.ToValidUTF8(value, "")
 	value = strings.Map(func(r rune) rune {
@@ -320,7 +320,7 @@ func sanitizeGraphErrorText(value string) string {
 	return truncateUTF8Bytes(value, maxGraphErrorTextBytes)
 }
 
-// WO-84: truncateUTF8Bytes enforces byte limits without splitting a code point.
+// WO-84@v3: truncateUTF8Bytes enforces byte limits without splitting a code point.
 func truncateUTF8Bytes(value string, limit int) string {
 	if len(value) <= limit {
 		return value

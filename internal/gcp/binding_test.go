@@ -132,7 +132,7 @@ func TestBindingScanner_NonServiceAccount(t *testing.T) {
 	}
 }
 
-// WO-89: a bare service-account member prefix cannot become a synthetic union identity.
+// WO-89@v4: a bare service-account member prefix cannot become a synthetic union identity.
 func TestBindingScanner_BlankServiceAccountMemberUsesIncompleteFallback(t *testing.T) {
 	mock := &mockCRM{policy: &crmv1.Policy{Bindings: []*crmv1.Binding{
 		{Role: "roles/viewer", Members: []string{"serviceAccount:", "serviceAccount:   "}},

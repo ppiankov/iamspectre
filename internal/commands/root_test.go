@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// WO-91: isolate executions of the package-level Cobra command across deterministic tests.
+// WO-91@v2: isolate executions of the package-level Cobra command across deterministic tests.
 func preserveRootCommandState(t *testing.T) {
 	t.Helper()
 
@@ -53,7 +53,7 @@ func preserveRootCommandState(t *testing.T) {
 	})
 }
 
-// WO-91: every supported version entry point must share exact output and bypass setup for flags.
+// WO-91@v2: every supported version entry point must share exact output and bypass setup for flags.
 func TestRootVersionEntryPoints(t *testing.T) {
 	const want = "iamspectre 1.2.3 (commit: abc, built: date)\n"
 	tests := []struct {
@@ -98,7 +98,7 @@ func TestRootVersionEntryPoints(t *testing.T) {
 	}
 }
 
-// WO-91: adding root-local aliases must retain the discoverable version subcommand.
+// WO-91@v2: adding root-local aliases must retain the discoverable version subcommand.
 func TestRootHelpRetainsVersionSubcommand(t *testing.T) {
 	preserveRootCommandState(t)
 

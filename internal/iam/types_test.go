@@ -271,7 +271,7 @@ func contains(s, substr string) bool {
 	return false
 }
 
-// WO-89: keep principal cardinality evidence internal to scanner aggregation.
+// WO-89@v4: keep principal cardinality evidence internal to scanner aggregation.
 func TestScanResultPrincipalIdentityCarrierIsNotSerialized(t *testing.T) {
 	const principalID = "serviceAccount:private@example.com"
 	result := ScanResult{
