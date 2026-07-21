@@ -17,11 +17,55 @@ func TestUserScanner_Type(t *testing.T) {
 	}
 }
 
+// WO-87: observe calls to evidence sources that remain independent of user enumeration.
+type observedUserGraph struct {
+	*mockGraph
+	authMethodCalls      int
+	securityDefaultCalls int
+}
+
+// WO-87: user-derived checks must not run without an enumerated user.
+func (g *observedUserGraph) ListAuthenticationMethods(ctx context.Context, userID string) ([]AuthenticationMethod, error) {
+	g.authMethodCalls++
+	return g.mockGraph.ListAuthenticationMethods(ctx, userID)
+}
+
+// WO-87: tenant policy remains evaluable when user enumeration fails.
+func (g *observedUserGraph) GetSecurityDefaults(ctx context.Context) (*SecurityDefaultsPolicy, error) {
+	g.securityDefaultCalls++
+	return g.mockGraph.GetSecurityDefaults(ctx)
+}
+
+// WO-87: retain tenant-policy evidence alongside the user-fetch error.
 func TestUserScanner_FetchError(t *testing.T) {
-	s := NewUserScanner(&mockGraph{}, nil, fmt.Errorf("network error"))
-	_, err := s.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	graph := &observedUserGraph{mockGraph: &mockGraph{secDefaults: &SecurityDefaultsPolicy{IsEnabled: false}}}
+	s := NewUserScanner(graph, nil, fmt.Errorf("network error"))
+	result, err := s.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
 	if err == nil {
 		t.Fatal("expected error from fetch failure")
+	}
+	if graph.securityDefaultCalls != 1 || graph.authMethodCalls != 0 {
+		t.Fatalf("calls: security defaults=%d auth methods=%d", graph.securityDefaultCalls, graph.authMethodCalls)
+	}
+	if findFinding(result.Findings, iam.FindingLegacyAuth) == nil || result.PrincipalsScanned != 0 {
+		t.Fatalf("independent tenant evidence was lost: %#v", result)
+	}
+}
+
+// WO-87: preserve both independent source failures without duplicating the fetch wrapper.
+func TestUserScanner_FetchAndSecurityDefaultsErrors(t *testing.T) {
+	graph := &observedUserGraph{mockGraph: &mockGraph{secDefaultsErr: fmt.Errorf("policy denied")}}
+	result, err := NewUserScanner(graph, nil, fmt.Errorf("users denied")).Scan(
+		context.Background(), iam.ScanConfig{StaleDays: 90},
+	)
+	if err == nil || strings.Count(err.Error(), "users denied") != 1 {
+		t.Fatalf("fetch error = %v", err)
+	}
+	if graph.securityDefaultCalls != 1 || graph.authMethodCalls != 0 {
+		t.Fatalf("calls: security defaults=%d auth methods=%d", graph.securityDefaultCalls, graph.authMethodCalls)
+	}
+	if got := strings.Join(result.Errors, "|"); strings.Count(got, "policy denied") != 1 {
+		t.Fatalf("result errors = %q", got)
 	}
 }
 

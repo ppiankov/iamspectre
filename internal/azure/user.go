@@ -47,12 +47,14 @@ func (s *UserScanner) Type() iam.ResourceType {
 
 // WO-77: Scan keeps stale findings and missing-evidence coverage on one clock and evidence rule.
 func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
+	result := &iam.ScanResult{}
 	if s.fetchErr != nil {
-		return nil, fmt.Errorf("fetch users: %w", s.fetchErr)
+		// WO-87: tenant policy is independent evidence and survives user enumeration failure.
+		s.checkLegacyAuth(ctx, result)
+		return result, fmt.Errorf("fetch users: %w", s.fetchErr)
 	}
 
 	// WO-15: count only principals admitted by the guest filter.
-	result := &iam.ScanResult{}
 	evidenceNow := time.Now().UTC() // WO-77: one clock sample governs cutoff and days-since metadata.
 	cutoff := iam.StaleThreshold(evidenceNow, cfg.StaleDays)
 	hasSignInData := false
