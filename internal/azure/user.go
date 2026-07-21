@@ -27,6 +27,8 @@ type UserScanner struct {
 	api           GraphAPI
 	users         []User
 	fetchErr      error
+	activityErr   error  // WO-81: preserve a separately failed protected evidence source.
+	activityCause string // WO-81: keep source gating distinct from absent per-user rows.
 	coverageScope string // WO-77: bind missing user activity evidence to one Azure tenant.
 }
 
@@ -37,7 +39,18 @@ func NewUserScanner(api GraphAPI, users []User, fetchErr error) *UserScanner {
 
 // WO-77: NewUserScannerWithScope binds missing activity observations to one Azure tenant.
 func NewUserScannerWithScope(api GraphAPI, users []User, fetchErr error, coverageScope string) *UserScanner {
-	return &UserScanner{api: api, users: users, fetchErr: fetchErr, coverageScope: coverageScope}
+	return NewUserScannerWithActivityEvidence(api, users, fetchErr, nil, userActivityUnknownCause, coverageScope)
+}
+
+// WO-81: NewUserScannerWithActivityEvidence binds protected-source diagnostics to base users.
+func NewUserScannerWithActivityEvidence(api GraphAPI, users []User, fetchErr, activityErr error, activityCause, coverageScope string) *UserScanner {
+	if activityCause == "" {
+		activityCause = userActivityUnknownCause
+	}
+	return &UserScanner{
+		api: api, users: users, fetchErr: fetchErr, activityErr: activityErr,
+		activityCause: activityCause, coverageScope: coverageScope,
+	}
 }
 
 // Type returns the resource type this scanner handles.
@@ -52,6 +65,10 @@ func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 		// WO-87: tenant policy is independent evidence and survives user enumeration failure.
 		s.checkLegacyAuth(ctx, result)
 		return result, fmt.Errorf("fetch users: %w", s.fetchErr)
+	}
+	if s.activityErr != nil {
+		// WO-81: a protected-source failure is explicit while ungated checks continue.
+		result.Errors = append(result.Errors, fmt.Sprintf("fetch user sign-in activity: %v", s.activityErr))
 	}
 
 	// WO-15: count only principals admitted by the guest filter.
@@ -129,7 +146,7 @@ func (s *UserScanner) appendActivityCoverage(result *iam.ScanResult, findingID i
 		return
 	}
 	result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
-		Capability: "azure_user_sign_in_activity", Cause: "user_activity_unknown",
+		Capability: "azure_user_sign_in_activity", Cause: s.activityCause,
 		Scope: s.coverageScope, FindingID: findingID, AffectedCount: missing,
 		EvaluableCount: evaluable, TotalCount: missing + evaluable,
 		ObservationWindow: fmt.Sprintf("stale-threshold:%dd", staleDays),

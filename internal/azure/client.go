@@ -40,6 +40,7 @@ const graphScope = "https://graph.microsoft.com/.default"
 // WO-68@v3: GraphAPI includes the separate service-principal activity evidence source.
 type GraphAPI interface {
 	ListUsers(ctx context.Context) ([]User, error)
+	ListUserSignInActivities(ctx context.Context) ([]UserSignInActivity, error) // WO-81: isolate separately authorized evidence.
 	ListApplications(ctx context.Context) ([]Application, error)
 	ListServicePrincipals(ctx context.Context) ([]ServicePrincipal, error)
 	ListServicePrincipalSignInActivities(ctx context.Context) ([]ServicePrincipalSignInActivity, error)
@@ -151,12 +152,23 @@ func newGraphClient(cred azcore.TokenCredential) *graphClient {
 }
 
 func (g *graphClient) ListUsers(ctx context.Context) ([]User, error) {
-	url := graphBaseURL + "/users?$select=id,displayName,userPrincipalName,userType,createdDateTime,signInActivity&$top=999"
+	url := graphBaseURL + "/users?$select=id,displayName,userPrincipalName,userType,createdDateTime&$top=999"
 	var all []User
 	if err := paginate(ctx, g, url, &all); err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
 	slog.Debug("Listed Azure AD users", "count", len(all))
+	return all, nil
+}
+
+// WO-81: fetch protected activity separately so authorization cannot erase base users.
+func (g *graphClient) ListUserSignInActivities(ctx context.Context) ([]UserSignInActivity, error) {
+	url := graphBaseURL + "/users?$select=id,signInActivity&$top=500"
+	var all []UserSignInActivity
+	if err := paginate(ctx, g, url, &all); err != nil {
+		return nil, fmt.Errorf("list user sign-in activities: %w", err)
+	}
+	slog.Debug("Listed Azure AD user sign-in activities", "count", len(all))
 	return all, nil
 }
 

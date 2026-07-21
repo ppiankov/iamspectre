@@ -12,6 +12,14 @@ const (
 	PrincipalActivityStale   PrincipalActivityState = "stale"
 )
 
+// WO-81: coverage causes distinguish source-wide gating from per-principal absence.
+const (
+	userActivityUnknownCause          = "user_activity_unknown"
+	userActivityPermissionDeniedCause = "permission_or_role_denied"
+	userActivityPremiumRequiredCause  = "premium_license_required"
+	userActivitySourceUnavailable     = "activity_source_unavailable"
+)
+
 // User represents a Microsoft Graph user.
 type User struct {
 	ID                string          `json:"id"`
@@ -27,6 +35,12 @@ type SignInActivity struct {
 	LastSignInDateTime               *time.Time `json:"lastSignInDateTime"`
 	LastNonInteractiveSignInDateTime *time.Time `json:"lastNonInteractiveSignInDateTime"`
 	LastSuccessfulSignInDateTime     *time.Time `json:"lastSuccessfulSignInDateTime"`
+}
+
+// WO-81: UserSignInActivity carries only the separately authorized activity evidence.
+type UserSignInActivity struct {
+	ID             string          `json:"id"`
+	SignInActivity *SignInActivity `json:"signInActivity"`
 }
 
 // Application represents an Azure AD app registration.

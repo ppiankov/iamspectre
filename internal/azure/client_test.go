@@ -27,24 +27,31 @@ func (staticTokenCredential) GetToken(context.Context, policy.TokenRequestOption
 
 // WO-68@v3: mockGraph carries service-principal activity separately from principal objects.
 type mockGraph struct {
-	users          []User
-	usersErr       error
-	apps           []Application
-	appsErr        error
-	sps            []ServicePrincipal
-	spsErr         error
-	spActivities   []ServicePrincipalSignInActivity
-	spActivityErr  error
-	roleAssigns    []DirectoryRoleAssignment
-	roleAssignsErr error
-	authMethods    map[string][]AuthenticationMethod
-	authMethodsErr map[string]error
-	secDefaults    *SecurityDefaultsPolicy
-	secDefaultsErr error
+	users           []User
+	usersErr        error
+	userActivities  []UserSignInActivity
+	userActivityErr error
+	apps            []Application
+	appsErr         error
+	sps             []ServicePrincipal
+	spsErr          error
+	spActivities    []ServicePrincipalSignInActivity
+	spActivityErr   error
+	roleAssigns     []DirectoryRoleAssignment
+	roleAssignsErr  error
+	authMethods     map[string][]AuthenticationMethod
+	authMethodsErr  map[string]error
+	secDefaults     *SecurityDefaultsPolicy
+	secDefaultsErr  error
 }
 
 func (m *mockGraph) ListUsers(_ context.Context) ([]User, error) {
 	return m.users, m.usersErr
+}
+
+// WO-81: expose the protected activity source independently from base users.
+func (m *mockGraph) ListUserSignInActivities(_ context.Context) ([]UserSignInActivity, error) {
+	return m.userActivities, m.userActivityErr
 }
 
 func (m *mockGraph) ListApplications(_ context.Context) ([]Application, error) {
@@ -138,7 +145,7 @@ func TestGraphClient_ListServicePrincipalSignInActivities(t *testing.T) {
 }
 
 // WO-84@v3: Graph authorization diagnostics must survive the public client's wrapping.
-func TestGraphClient_ListUsersPreservesGraphHTTPError(t *testing.T) {
+func TestGraphClient_ListUserSignInActivitiesPreservesGraphHTTPError(t *testing.T) {
 	tests := []struct {
 		name string
 		code string
@@ -155,10 +162,10 @@ func TestGraphClient_ListUsersPreservesGraphHTTPError(t *testing.T) {
 				"Client-Request-Id": []string{"header-client"},
 			})
 
-			_, err := client.ListUsers(context.Background())
+			_, err := client.ListUserSignInActivities(context.Background())
 			var graphErr *GraphHTTPError
 			if !errors.As(err, &graphErr) {
-				t.Fatalf("ListUsers error = %T %v, want *GraphHTTPError", err, err)
+				t.Fatalf("ListUserSignInActivities error = %T %v, want *GraphHTTPError", err, err)
 			}
 			if graphErr.StatusCode != http.StatusForbidden || graphErr.Code != tt.code {
 				t.Fatalf("GraphHTTPError = %#v", graphErr)
@@ -333,11 +340,23 @@ func TestGraphClientListMethods(t *testing.T) {
 			name: "users",
 			path: "/v1.0/users",
 			query: map[string]string{
-				"$select": "id,displayName,userPrincipalName,userType,createdDateTime,signInActivity",
+				"$select": "id,displayName,userPrincipalName,userType,createdDateTime",
 				"$top":    "999",
 			},
 			call: func(client *graphClient) (int, error) {
 				items, err := client.ListUsers(context.Background())
+				return len(items), err
+			},
+		},
+		{
+			name: "user sign-in activity",
+			path: "/v1.0/users",
+			query: map[string]string{
+				"$select": "id,signInActivity",
+				"$top":    "500",
+			},
+			call: func(client *graphClient) (int, error) {
+				items, err := client.ListUserSignInActivities(context.Background())
 				return len(items), err
 			},
 		},
@@ -429,6 +448,13 @@ func TestGraphClientListMethodsWrapGraphErrors(t *testing.T) {
 		wantPrefix string
 		call       func(*graphClient) error
 	}{
+		{
+			name: "user sign-in activity", wantPrefix: "list user sign-in activities:",
+			call: func(client *graphClient) error {
+				_, err := client.ListUserSignInActivities(context.Background())
+				return err
+			},
+		},
 		{
 			name: "applications", wantPrefix: "list applications:",
 			call: func(client *graphClient) error { _, err := client.ListApplications(context.Background()); return err },
