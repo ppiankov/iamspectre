@@ -14,6 +14,11 @@ var overprivilegedRoles = map[string]bool{
 	"roles/editor": true,
 }
 
+const (
+	googleAPIsServiceAgentDomain = "@cloudservices.gserviceaccount.com"
+	defaultComputeAccountSuffix  = "-compute@developer.gserviceaccount.com"
+)
+
 // BindingScanner detects overprivileged service account IAM bindings.
 type BindingScanner struct {
 	api     ResourceManagerAPI
@@ -42,6 +47,19 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 		ObservedPrincipalIDs:                make(map[string]struct{}),
 		PrincipalIdentityAccountingComplete: true,
 	}
+	// WO-83: project-number lookup is independent evidence; failure must preserve candidates.
+	project, projectErr := s.api.GetProject(ctx, s.project)
+	if projectErr == nil && (project == nil || project.ProjectNumber <= 0) {
+		projectErr = fmt.Errorf("project metadata missing project number")
+	}
+	localGoogleAPIsAgent := ""
+	localDefaultCompute := ""
+	if projectErr == nil {
+		projectNumber := fmt.Sprintf("%d", project.ProjectNumber)
+		localGoogleAPIsAgent = projectNumber + googleAPIsServiceAgentDomain
+		localDefaultCompute = projectNumber + defaultComputeAccountSuffix
+	}
+	classificationCandidates := 0
 	legacyPrincipalIDs := make(map[string]struct{}) // WO-89@v4: preserve additive fallback when an observed member has no usable identity.
 	for _, binding := range policy.Bindings {
 		for _, member := range binding.Members {
@@ -50,6 +68,7 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 			}
 
 			email := strings.TrimPrefix(member, serviceAccountPrincipalPrefix)
+			normalizedEmail := strings.ToLower(strings.TrimSpace(email))
 			legacyPrincipalIDs[email] = struct{}{}
 			principalID := canonicalServiceAccountPrincipalID(email)
 			if principalID == "" {
@@ -64,6 +83,17 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 			if iam.IsExcluded(cfg, email, email) { // WO-14@v3: use the shared exclusion policy.
 				continue
 			}
+			classificationCandidates++
+			// WO-83: suppress only the exact local provider-owned Editor grant.
+			if binding.Role == "roles/editor" && projectErr == nil && normalizedEmail == localGoogleAPIsAgent {
+				continue
+			}
+
+			recommendation := "Replace with a more restrictive role following least-privilege principle"
+			if binding.Role == "roles/editor" && projectErr == nil && normalizedEmail == localDefaultCompute {
+				// WO-83: default Compute accounts are customer-managed; preserve the finding with safe advice.
+				recommendation = "Use Policy Simulator or IAM role recommendations before replacing the Editor role"
+			}
 
 			result.Findings = append(result.Findings, iam.Finding{
 				ID:             iam.FindingOverprivilegedSA,
@@ -72,7 +102,7 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 				ResourceID:     fmt.Sprintf("%s/%s/%s", s.project, binding.Role, email),
 				ResourceName:   email,
 				Message:        fmt.Sprintf("Service account has %s role on project %s", binding.Role, s.project),
-				Recommendation: "Replace with a more restrictive role following least-privilege principle",
+				Recommendation: recommendation,
 				Metadata: map[string]any{
 					"project": s.project,
 					"role":    binding.Role,
@@ -80,6 +110,16 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 				},
 			})
 		}
+	}
+	if projectErr != nil && classificationCandidates > 0 {
+		// WO-83: fail closed while making the managed-grant classification gap explicit.
+		result.Errors = append(result.Errors, fmt.Sprintf("classify managed service agents: %v", projectErr))
+		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
+			Capability: "gcp_managed_service_agent_classification", Cause: "project_metadata_unavailable",
+			Scope: "gcp-project:" + s.project, FindingID: iam.FindingOverprivilegedSA,
+			AffectedCount: classificationCandidates, TotalCount: classificationCandidates,
+			FeatureStage: "v1", MaxConsequence: iam.SeverityCritical,
+		})
 	}
 
 	if result.PrincipalIdentityAccountingComplete {
