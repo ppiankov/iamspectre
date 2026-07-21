@@ -73,6 +73,12 @@ type TextReporter struct {
 	Writer io.Writer
 }
 
+// ReportReporter generates a customer-deliverable Markdown audit report.
+// WO-102@v3: keep the report format separate from the operator-oriented text table.
+type ReportReporter struct {
+	Writer io.Writer // WO-102@v3: inject the artifact destination without taking ownership.
+}
+
 // JSONReporter generates spectre/v1 envelope JSON output.
 type JSONReporter struct {
 	Writer io.Writer

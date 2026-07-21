@@ -127,8 +127,9 @@ func TestEnhanceError_NoHint(t *testing.T) {
 }
 
 // WO-25@v2: keep reporter construction coverage on the writer-based boundary.
+// WO-102@v3: include the customer Markdown reporter in the valid format contract.
 func TestSelectReporter_ValidFormats(t *testing.T) {
-	formats := []string{"text", "json", "sarif", "spectrehub"}
+	formats := []string{"text", "report", "json", "sarif", "spectrehub"}
 	for _, f := range formats {
 		t.Run(f, func(t *testing.T) {
 			r, err := selectReporter(f, &bytes.Buffer{})
@@ -162,6 +163,7 @@ func TestRegisterCommonScanFlags(t *testing.T) {
 }
 
 // WO-27@v2: apply the exact shared flag contract to every fresh provider command.
+// WO-102@v3: pin report format discoverability in shared flag help.
 func assertCommonFlagMetadata(t *testing.T, cmd *cobra.Command) {
 	t.Helper()
 	tests := []struct {
@@ -169,7 +171,7 @@ func assertCommonFlagMetadata(t *testing.T, cmd *cobra.Command) {
 	}{
 		{name: "stale-days", def: "90", valueType: "int", usage: "Inactivity threshold (days)"},
 		{name: "severity-min", def: "low", valueType: "string", usage: "Minimum severity to report: critical, high, medium, low"},
-		{name: "format", def: "text", valueType: "string", usage: "Output format: text, json, sarif, spectrehub"},
+		{name: "format", def: "text", valueType: "string", usage: "Output format: text, report, json, sarif, spectrehub"},
 		{name: "output", def: "", shorthand: "o", valueType: "string", usage: "Output file path (default: stdout)"},
 		{name: "timeout", def: "5m0s", valueType: "duration", usage: "Scan timeout"},
 	}
@@ -328,12 +330,13 @@ type closeErrorWriter struct {
 func (w *closeErrorWriter) Close() error { return w.err }
 
 // WO-25@v2: every reporter format must execute through the shared pipeline.
+// WO-102@v3: keep the new report format on that provider-neutral pipeline.
 func TestAnalyzeAndReportFormats(t *testing.T) {
 	// WO-74@v5: SpectreHub integration uses release metadata accepted by the consumer schema.
 	oldVersion := version
 	version = "0.1.0"
 	t.Cleanup(func() { version = oldVersion })
-	for _, format := range []string{"text", "json", "sarif", "spectrehub"} {
+	for _, format := range []string{"text", "report", "json", "sarif", "spectrehub"} {
 		t.Run(format, func(t *testing.T) {
 			var output bytes.Buffer
 			err := analyzeAndReport(&iam.ScanResult{}, postScanOptions{
@@ -342,6 +345,34 @@ func TestAnalyzeAndReportFormats(t *testing.T) {
 			})
 			if err != nil || output.Len() == 0 {
 				t.Fatalf("format %s output=%q err=%v", format, output.String(), err)
+			}
+		})
+	}
+}
+
+// WO-102@v3: every provider reaches the customer report through the shared post-scan boundary.
+func TestAnalyzeAndReportReportAcrossProviders(t *testing.T) {
+	providers := []struct {
+		cloud, targetType string
+	}{
+		{cloud: "aws", targetType: "aws-account"},
+		{cloud: "gcp", targetType: "gcp-project"},
+		{cloud: "azure", targetType: "azure-tenant"},
+	}
+	for _, provider := range providers {
+		t.Run(provider.cloud, func(t *testing.T) {
+			var output bytes.Buffer
+			err := analyzeAndReport(&iam.ScanResult{}, postScanOptions{
+				cloud: provider.cloud, targetType: provider.targetType, targetID: "customer",
+				format: "report", severityMin: "low", timestamp: time.Unix(0, 0).UTC(), writer: &output,
+			})
+			if err != nil {
+				t.Fatalf("analyzeAndReport: %v", err)
+			}
+			for _, want := range []string{"# iamspectre IAM Audit Report", "- Cloud: " + provider.cloud, "- Target: " + provider.targetType} {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("output missing %q:\n%s", want, output.String())
+				}
 			}
 		})
 	}
