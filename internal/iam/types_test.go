@@ -270,3 +270,27 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+// WO-89@v4: keep principal cardinality evidence internal to scanner aggregation.
+func TestScanResultPrincipalIdentityCarrierIsNotSerialized(t *testing.T) {
+	const principalID = "serviceAccount:private@example.com"
+	result := ScanResult{
+		ObservedPrincipalIDs:                map[string]struct{}{principalID: {}},
+		PrincipalIdentityAccountingComplete: true,
+		PrincipalsScanned:                   1,
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal ScanResult: %v", err)
+	}
+	serialized := string(data)
+	for _, forbidden := range []string{principalID, "ObservedPrincipalIDs", "PrincipalIdentityAccountingComplete", "observed_principal", "identity_accounting"} {
+		if contains(serialized, forbidden) {
+			t.Fatalf("serialized ScanResult %q contains internal value %q", serialized, forbidden)
+		}
+	}
+	if !contains(serialized, `"principals_scanned":1`) {
+		t.Fatalf("serialized ScanResult %q omits public principal count", serialized)
+	}
+}

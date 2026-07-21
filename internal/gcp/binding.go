@@ -37,21 +37,29 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 		return nil, fmt.Errorf("get project IAM policy: %w", err)
 	}
 
-	result := &iam.ScanResult{}
-
-	saCount := make(map[string]bool)
+	// WO-89@v4: a successful policy read makes even an empty observed identity set complete.
+	result := &iam.ScanResult{
+		ObservedPrincipalIDs:                make(map[string]struct{}),
+		PrincipalIdentityAccountingComplete: true,
+	}
+	legacyPrincipalIDs := make(map[string]struct{}) // WO-89@v4: preserve additive fallback when an observed member has no usable identity.
 	for _, binding := range policy.Bindings {
-		if !overprivilegedRoles[binding.Role] {
-			continue
-		}
-
 		for _, member := range binding.Members {
-			if !strings.HasPrefix(member, "serviceAccount:") {
+			if !strings.HasPrefix(member, serviceAccountPrincipalPrefix) {
 				continue
 			}
 
-			email := strings.TrimPrefix(member, "serviceAccount:")
-			saCount[email] = true
+			email := strings.TrimPrefix(member, serviceAccountPrincipalPrefix)
+			legacyPrincipalIDs[email] = struct{}{}
+			principalID := canonicalServiceAccountPrincipalID(email)
+			if principalID == "" {
+				result.PrincipalIdentityAccountingComplete = false // WO-89@v4: never count a synthetic namespace-only identity.
+			} else {
+				result.ObservedPrincipalIDs[principalID] = struct{}{} // WO-89@v4: count every observed service account independently of finding selection.
+			}
+			if !overprivilegedRoles[binding.Role] {
+				continue
+			}
 
 			if iam.IsExcluded(cfg, email, email) { // WO-14@v3: use the shared exclusion policy.
 				continue
@@ -74,6 +82,10 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 		}
 	}
 
-	result.PrincipalsScanned = len(saCount)
+	if result.PrincipalIdentityAccountingComplete {
+		result.PrincipalsScanned = len(result.ObservedPrincipalIDs)
+	} else {
+		result.PrincipalsScanned = len(legacyPrincipalIDs)
+	}
 	return result, nil
 }

@@ -42,10 +42,34 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          version: latest
-          args: release --clean
+      # WO-82@v4: Pin both release tools so signing semantics cannot drift between tags.
+      - name: Install release tools
+        run: |
+          go install github.com/anchore/quill/cmd/quill@v0.7.1
+          go install github.com/goreleaser/goreleaser/v2@v2.13.3
+
+      # WO-82@v4: Keep signing credentials confined to the fail-closed release step.
+      - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          QUILL_SIGN_P12: ${{ secrets.QUILL_SIGN_P12 }}
+          QUILL_SIGN_PASSWORD: ${{ secrets.QUILL_SIGN_PASSWORD }}
+          QUILL_NOTARY_KEY: ${{ secrets.QUILL_NOTARY_KEY }}
+          QUILL_NOTARY_KEY_ID: ${{ secrets.QUILL_NOTARY_KEY_ID }}
+          QUILL_NOTARY_ISSUER: ${{ secrets.QUILL_NOTARY_ISSUER }}
+        run: |
+          required_secrets=(
+            QUILL_SIGN_P12
+            QUILL_SIGN_PASSWORD
+            QUILL_NOTARY_KEY
+            QUILL_NOTARY_KEY_ID
+            QUILL_NOTARY_ISSUER
+          )
+          for secret_name in "${required_secrets[@]}"; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              echo "::error::Required release credential ${secret_name} is not configured"
+              exit 1
+            fi
+          done
+          goreleaser release --clean

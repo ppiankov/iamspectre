@@ -80,6 +80,7 @@ func TestBindingScanner_EditorRole(t *testing.T) {
 	}
 }
 
+// WO-89@v4: safe-role observations still contribute to complete principal accounting.
 func TestBindingScanner_SafeRole(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{
@@ -100,6 +101,12 @@ func TestBindingScanner_SafeRole(t *testing.T) {
 
 	if len(result.Findings) != 0 {
 		t.Fatalf("expected 0 findings for viewer role, got %d", len(result.Findings))
+	}
+	if result.PrincipalsScanned != 1 || !result.PrincipalIdentityAccountingComplete {
+		t.Fatalf("principal accounting = %#v", result)
+	}
+	if _, ok := result.ObservedPrincipalIDs["serviceAccount:sa1@test.iam.gserviceaccount.com"]; !ok {
+		t.Fatalf("observed principals = %#v", result.ObservedPrincipalIDs)
 	}
 }
 
@@ -126,6 +133,25 @@ func TestBindingScanner_NonServiceAccount(t *testing.T) {
 	}
 }
 
+// WO-89@v4: a bare service-account member prefix cannot become a synthetic union identity.
+func TestBindingScanner_BlankServiceAccountMemberUsesIncompleteFallback(t *testing.T) {
+	mock := &mockCRM{policy: &crmv1.Policy{Bindings: []*crmv1.Binding{
+		{Role: "roles/viewer", Members: []string{"serviceAccount:", "serviceAccount:   "}},
+	}}}
+
+	result, err := NewBindingScanner(mock, "test-project").Scan(context.Background(), iam.ScanConfig{})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if result.PrincipalIdentityAccountingComplete || len(result.ObservedPrincipalIDs) != 0 {
+		t.Fatalf("blank identity carrier = %#v, complete=%v", result.ObservedPrincipalIDs, result.PrincipalIdentityAccountingComplete)
+	}
+	if result.PrincipalsScanned != 2 {
+		t.Fatalf("additive principal count = %d, want prior raw-member count 2", result.PrincipalsScanned)
+	}
+}
+
+// WO-89@v4: distinct policy members contribute distinct canonical principal identities.
 func TestBindingScanner_MultipleSAs(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{
@@ -140,7 +166,7 @@ func TestBindingScanner_MultipleSAs(t *testing.T) {
 				{
 					Role: "roles/editor",
 					Members: []string{
-						"serviceAccount:sa1@test.iam.gserviceaccount.com",
+						"serviceAccount: SA1@Test.Iam.Gserviceaccount.Com ",
 					},
 				},
 			},
@@ -162,8 +188,12 @@ func TestBindingScanner_MultipleSAs(t *testing.T) {
 	if result.PrincipalsScanned != 2 {
 		t.Fatalf("expected 2 unique principals, got %d", result.PrincipalsScanned)
 	}
+	if !result.PrincipalIdentityAccountingComplete || len(result.ObservedPrincipalIDs) != 2 {
+		t.Fatalf("principal identities = %#v, complete=%v", result.ObservedPrincipalIDs, result.PrincipalIdentityAccountingComplete)
+	}
 }
 
+// WO-89@v4: exclusion suppresses findings without erasing an observed principal.
 func TestBindingScanner_Excluded(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{
@@ -189,6 +219,9 @@ func TestBindingScanner_Excluded(t *testing.T) {
 	if len(result.Findings) != 0 {
 		t.Fatalf("expected 0 findings (excluded), got %d", len(result.Findings))
 	}
+	if result.PrincipalsScanned != 1 || !result.PrincipalIdentityAccountingComplete {
+		t.Fatalf("excluded principal accounting = %#v", result)
+	}
 }
 
 func TestBindingScanner_GetPolicyError(t *testing.T) {
@@ -203,6 +236,7 @@ func TestBindingScanner_GetPolicyError(t *testing.T) {
 	}
 }
 
+// WO-89@v4: an empty successful policy read proves a complete empty identity set.
 func TestBindingScanner_EmptyPolicy(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{},
@@ -216,6 +250,9 @@ func TestBindingScanner_EmptyPolicy(t *testing.T) {
 
 	if len(result.Findings) != 0 {
 		t.Fatalf("expected 0 findings, got %d", len(result.Findings))
+	}
+	if result.PrincipalsScanned != 0 || !result.PrincipalIdentityAccountingComplete || len(result.ObservedPrincipalIDs) != 0 {
+		t.Fatalf("empty principal accounting = %#v", result)
 	}
 }
 

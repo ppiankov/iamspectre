@@ -93,6 +93,29 @@ func TestEnhanceError_GCPCredentials(t *testing.T) {
 	}
 }
 
+// WO-101@v3: pin every remaining cloud hint without changing or exposing the source error.
+func TestEnhanceErrorAdditionalHints(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		want     string
+	}{
+		{name: "expired request", provider: "RequestExpired: clock skew", want: "system clock"},
+		{name: "throttling", provider: "Throttling: rate exceeded", want: "rate limit"},
+		{name: "Azure authentication", provider: "AADSTS700016: application missing", want: "az login"},
+		{name: "Graph authorization", provider: "Authorization_RequestDenied: denied", want: "Graph API permissions"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := enhanceError("scan", errors.New(test.provider))
+			if !strings.Contains(err.Error(), "hint:") || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %q, want hint containing %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestEnhanceError_NoHint(t *testing.T) {
 	err := enhanceError("test action", errors.New("some random error"))
 	if strings.Contains(err.Error(), "hint:") {

@@ -204,6 +204,47 @@ func TestResolvedTimeoutPrecedesContextConstruction(t *testing.T) {
 	}
 }
 
+// WO-101@v3: a disabled timeout preserves the parent and never invokes the deadline factory.
+func TestWithScanTimeoutDisabled(t *testing.T) {
+	parent := context.Background()
+	called := false
+	ctx, cancel := withScanTimeout(
+		parent,
+		0,
+		func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+			called = true
+			return nil, nil
+		},
+	)
+	cancel()
+
+	if called {
+		t.Fatal("timeout factory called for disabled timeout")
+	}
+	if ctx != parent {
+		t.Fatalf("context = %T, want exact parent %T", ctx, parent)
+	}
+}
+
+// WO-101@v3: reject missing GCP project input before credential or network initialization.
+func TestRunGCPRequiresProjectBeforeClientInitialization(t *testing.T) {
+	oldConfig := cfg
+	oldFlags := gcpFlags
+	t.Cleanup(func() {
+		cfg = oldConfig
+		gcpFlags = oldFlags
+	})
+
+	cfg = config.Config{}
+	cmd := &cobra.Command{Use: "gcp"}
+	cmd.SetContext(context.Background())
+	registerGCPFlags(cmd, &gcpFlags)
+	err := runGCP(cmd, nil)
+	if err == nil || err.Error() != "GCP project required; use --project or set in .iamspectre.yaml" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 // WO-17: pin shared default resolution and exclusion conversion as one operation.
 func TestResolveCommonOptions(t *testing.T) {
 	oldConfig := cfg

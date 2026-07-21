@@ -15,11 +15,32 @@ builds:
       - -X main.date={{.Date}}
     goos:
       - linux
-      - darwin
       - windows
     goarch:
       - amd64
       - arm64
+
+  # WO-82@v4: Sign Darwin binaries before archiving so Gatekeeper sees the signed Mach-O.
+  - id: iamspectre-darwin
+    main: ./cmd/iamspectre/
+    binary: iamspectre
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    hooks:
+      post:
+        - quill sign-and-notarize "{{ .Path }}" --dry-run={{ .IsSnapshot }} --ad-hoc={{ .IsSnapshot }}
 
 archives:
   - format: tar.gz
