@@ -2,9 +2,12 @@ package commands
 
 import (
 	"bytes"
+	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/ppiankov/iamspectre/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -115,5 +118,46 @@ func TestRootHelpRetainsVersionSubcommand(t *testing.T) {
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr = %q, want empty", got)
+	}
+}
+
+// WO-101@v3: pin root config loading for both absent and malformed test-owned files.
+func TestRootPersistentPreRunConfigOutcomes(t *testing.T) {
+	previousLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	tests := []struct {
+		name       string
+		configBody string
+		wantStale  int
+	}{
+		{name: "absent config", wantStale: 0},
+		{name: "malformed config preserves prior state", configBody: "stale_days: [", wantStale: 123},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			preserveRootCommandState(t)
+			t.Chdir(t.TempDir())
+			if test.configBody != "" {
+				if err := os.WriteFile(".iamspectre.yaml", []byte(test.configBody), 0o644); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			}
+
+			cfg = config.Config{StaleDays: 123}
+			var output bytes.Buffer
+			rootCmd.SetArgs([]string{"version"})
+			rootCmd.SetOut(&output)
+			if err := Execute("1.2.3", "abc", "date"); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if cfg.StaleDays != test.wantStale {
+				t.Fatalf("stale days = %d, want %d", cfg.StaleDays, test.wantStale)
+			}
+			if output.String() != "iamspectre 1.2.3 (commit: abc, built: date)\n" {
+				t.Fatalf("version output = %q", output.String())
+			}
+		})
 	}
 }
