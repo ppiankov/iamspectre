@@ -5,6 +5,17 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-21
+
+### Added
+
+- `report` output format (`--format report`): a customer-deliverable Markdown report with an executive summary, per-finding evidence and full (untruncated) recommendations, a coverage-gap section, and a scope/methodology footer
+
+### Changed
+
+- `WILDCARD_POLICY` severity is now graded by correlated statement risk: a wildcard action scoped to a specific resource or bounded by a condition is no longer rated critical; critical is reserved for admin-equivalent (unscoped action-and-resource) grants
+- AWS roles whose `RoleLastUsed` evidence is unavailable are now reported as a single deduplicated coverage-gap observation instead of one error per role, so large accounts no longer produce a flood of error lines
+
 ## [0.4.2] - 2026-07-21
 
 ### Added
