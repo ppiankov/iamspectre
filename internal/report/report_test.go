@@ -23,6 +23,7 @@ func TestReportReporter_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden: %v\noutput:\n%s", err, output.String())
 	}
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n")) // WO-102@v3: compare canonical report bytes across Git checkout line endings.
 	if output.String() != string(want) {
 		t.Fatalf("report mismatch\n--- got ---\n%s\n--- want ---\n%s", output.String(), want)
 	}
