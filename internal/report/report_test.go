@@ -89,6 +89,7 @@ func (w reportFailingWriter) Write([]byte) (int, error) { return 0, w.err }
 // WO-102@v3: exercise ordering, notable facts, coverage, errors, and long untruncated fields.
 func reportFixture() Data {
 	timestamp := time.Date(2026, time.July, 21, 8, 9, 10, 0, time.UTC)
+	longMessage := strings.Repeat("retain this complete evidence ", 5) + "without truncation"
 	longRecommendation := strings.Repeat("review this permission carefully ", 5) + "before changing access"
 	return Data{
 		Tool: "iamspectre", Version: "0.4.2", Timestamp: timestamp,
@@ -98,7 +99,7 @@ func reportFixture() Data {
 			{
 				ID: iam.FindingStaleAccessKey, Severity: iam.SeverityMedium,
 				ResourceType: iam.ResourceIAMUser, ResourceID: "access-key-redacted", ResourceName: "alice-key",
-				Message: "Access key has no recorded use", Recommendation: longRecommendation,
+				Message: longMessage, Recommendation: longRecommendation,
 				Metadata: map[string]any{"days_old": 3650, "days_since_use": 365, "last_used": "unknown"},
 			},
 			{

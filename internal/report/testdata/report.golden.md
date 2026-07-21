@@ -33,7 +33,7 @@
 - Resource ID: access-key-redacted
 - Resource name: alice-key
 - Risk rationale: Medium-severity evidence indicates elevated exposure that warrants planned remediation.
-- Evidence: Access key has no recorded use
+- Evidence: retain this complete evidence retain this complete evidence retain this complete evidence retain this complete evidence retain this complete evidence without truncation
 - Recommendation: review this permission carefully review this permission carefully review this permission carefully review this permission carefully review this permission carefully before changing access
 - Evidence metadata:
   - days\_old: 3650
