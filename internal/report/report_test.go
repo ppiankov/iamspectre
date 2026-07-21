@@ -84,6 +84,7 @@ func TestReportReporter_WriterError(t *testing.T) {
 // WO-102@v3: inject a deterministic writer failure without filesystem behavior.
 type reportFailingWriter struct{ err error }
 
+// WO-102@v3: return the injected artifact-write failure unchanged.
 func (w reportFailingWriter) Write([]byte) (int, error) { return 0, w.err }
 
 // WO-102@v3: exercise ordering, notable facts, coverage, errors, and long untruncated fields.
