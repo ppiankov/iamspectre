@@ -83,7 +83,10 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 			if iam.IsExcluded(cfg, email, email) { // WO-14@v3: use the shared exclusion policy.
 				continue
 			}
-			classificationCandidates++
+			if binding.Role == "roles/editor" && strings.HasSuffix(normalizedEmail, googleAPIsServiceAgentDomain) {
+				// WO-83: only cloudservices Editor bindings depend on local project-number correlation.
+				classificationCandidates++
+			}
 			// WO-83: suppress only the exact local provider-owned Editor grant.
 			if binding.Role == "roles/editor" && projectErr == nil && normalizedEmail == localGoogleAPIsAgent {
 				continue

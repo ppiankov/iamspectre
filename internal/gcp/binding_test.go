@@ -162,7 +162,7 @@ func TestBindingScanner_ProjectMetadataFailurePreservesCandidates(t *testing.T) 
 		t.Fatalf("coverage gaps = %#v", result.CoverageGaps)
 	}
 	gap := result.CoverageGaps[0]
-	if gap.Capability != "gcp_managed_service_agent_classification" || gap.Cause != "project_metadata_unavailable" || gap.AffectedCount != 2 || gap.TotalCount != 2 {
+	if gap.Capability != "gcp_managed_service_agent_classification" || gap.Cause != "project_metadata_unavailable" || gap.AffectedCount != 1 || gap.TotalCount != 1 {
 		t.Fatalf("coverage gap = %#v", gap)
 	}
 }
