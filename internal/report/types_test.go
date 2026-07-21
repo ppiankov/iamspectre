@@ -283,6 +283,25 @@ func TestJSONReporter(t *testing.T) {
 	}
 }
 
+// WO-86: JSON must never serialize a complete status beside retained scanner errors.
+func TestJSONReporter_NormalizesPartialStatus(t *testing.T) {
+	var buf bytes.Buffer
+	data := testData()
+	data.Status = CompletionComplete
+	data.Errors = []string{"scanner denied"}
+
+	if err := (&JSONReporter{Writer: &buf}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["status"] != "partial" {
+		t.Fatalf("status = %#v, want partial", decoded["status"])
+	}
+}
+
 // WO-74@v5: pin canonical locations, stable IDs, supported severity, and summary field names.
 func TestSpectreHubReporter(t *testing.T) {
 	var buf bytes.Buffer
