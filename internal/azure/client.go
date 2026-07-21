@@ -7,15 +7,29 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 )
 
-const graphBaseURL = "https://graph.microsoft.com/v1.0"
+const (
+	graphBaseURL = "https://graph.microsoft.com/v1.0"
+
+	// WO-84: bound transport reads independently from diagnostic text retention.
+	maxGraphErrorBodyBytes = 64 * 1024
+	// WO-84: bound each stored field and the combined Graph-sourced diagnostic.
+	maxGraphErrorTextBytes = 4 * 1024
+)
+
+// WO-84: redact bearer credentials before retaining any Graph-sourced text.
+var bearerCredentialPattern = regexp.MustCompile(`(?i)\bbearer[ \t]+[A-Za-z0-9._~+/=-]+`)
 
 // WO-68@v3: service-principal activity is available only from the Microsoft Graph beta reports surface.
 const graphBetaBaseURL = "https://graph.microsoft.com/beta"
@@ -38,6 +52,55 @@ type GraphAPI interface {
 type Client struct {
 	Graph    GraphAPI
 	TenantID string
+}
+
+// WO-84: GraphHTTPError preserves only bounded, diagnostic-safe Graph error fields.
+type GraphHTTPError struct {
+	StatusCode      int
+	Code            string
+	Message         string
+	RequestID       string
+	ClientRequestID string
+}
+
+// WO-84: Error omits URLs, bodies, headers, and credentials from operator output.
+func (e *GraphHTTPError) Error() string {
+	if e == nil {
+		return "graph API returned an unknown status"
+	}
+	base := fmt.Sprintf("graph API returned %d", e.StatusCode)
+
+	parts := make([]string, 0, 4)
+	if value := sanitizeGraphErrorText(e.Code); value != "" {
+		parts = append(parts, value)
+	}
+	if value := sanitizeGraphErrorText(e.Message); value != "" {
+		parts = append(parts, value)
+	}
+	if value := sanitizeGraphErrorText(e.RequestID); value != "" {
+		parts = append(parts, "request_id="+value)
+	}
+	if value := sanitizeGraphErrorText(e.ClientRequestID); value != "" {
+		parts = append(parts, "client_request_id="+value)
+	}
+	if len(parts) == 0 {
+		return base
+	}
+
+	detail := truncateUTF8Bytes(strings.Join(parts, ": "), maxGraphErrorTextBytes)
+	return base + ": " + detail
+}
+
+// WO-84: graphErrorEnvelope allowlists the only response fields diagnostics retain.
+type graphErrorEnvelope struct {
+	Error struct {
+		Code       string `json:"code"`
+		Message    string `json:"message"`
+		InnerError struct {
+			RequestID       string `json:"request-id"`
+			ClientRequestID string `json:"client-request-id"`
+		} `json:"innerError"`
+	} `json:"error"`
 }
 
 // NewClient creates an Azure client using DefaultAzureCredential.
@@ -191,10 +254,9 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 			return resp.Body, nil
 		}
 
-		// WO-5: ignore Close error explicitly to satisfy errcheck (non-OK body discarded before retry).
-		_ = resp.Body.Close()
-
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries-1 {
+			// WO-84: decide the retry before decoding and close the discarded body before waiting.
+			_ = resp.Body.Close()
 			retryAfter := 5
 			if v := resp.Header.Get("Retry-After"); v != "" {
 				if parsed, err := strconv.Atoi(v); err == nil {
@@ -210,10 +272,65 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 			continue
 		}
 
-		return nil, fmt.Errorf("graph API returned %d for %s", resp.StatusCode, url)
+		// WO-84: terminal transport errors retain only allowlisted, bounded diagnostics.
+		graphErr := decodeGraphHTTPError(resp)
+		_ = resp.Body.Close()
+		return nil, graphErr
 	}
 
-	return nil, fmt.Errorf("max retries exceeded for %s", url)
+	return nil, fmt.Errorf("graph API retry limit exhausted")
+}
+
+// WO-84: decodeGraphHTTPError returns the same status-only fallback for unsafe bodies.
+func decodeGraphHTTPError(resp *http.Response) *GraphHTTPError {
+	result := &GraphHTTPError{StatusCode: resp.StatusCode}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGraphErrorBodyBytes+1))
+	if err != nil || len(body) == 0 || len(body) > maxGraphErrorBodyBytes {
+		return result
+	}
+
+	var envelope graphErrorEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return result
+	}
+
+	result.Code = sanitizeGraphErrorText(envelope.Error.Code)
+	result.Message = sanitizeGraphErrorText(envelope.Error.Message)
+	result.RequestID = sanitizeGraphErrorText(envelope.Error.InnerError.RequestID)
+	result.ClientRequestID = sanitizeGraphErrorText(envelope.Error.InnerError.ClientRequestID)
+	if result.RequestID == "" {
+		result.RequestID = sanitizeGraphErrorText(resp.Header.Get("request-id"))
+	}
+	if result.ClientRequestID == "" {
+		result.ClientRequestID = sanitizeGraphErrorText(resp.Header.Get("client-request-id"))
+	}
+	return result
+}
+
+// WO-84: sanitizeGraphErrorText removes controls and credentials before truncation.
+func sanitizeGraphErrorText(value string) string {
+	value = strings.ToValidUTF8(value, "")
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	value = bearerCredentialPattern.ReplaceAllString(value, "Bearer [REDACTED]")
+	return truncateUTF8Bytes(value, maxGraphErrorTextBytes)
+}
+
+// WO-84: truncateUTF8Bytes enforces byte limits without splitting a code point.
+func truncateUTF8Bytes(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 // paginate fetches all pages of a Graph API collection endpoint.

@@ -1,12 +1,17 @@
 package azure
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
@@ -129,6 +134,233 @@ func TestGraphClient_ListServicePrincipalSignInActivities(t *testing.T) {
 	}
 	if requests != 2 || len(activities) != 2 || activities[0].AppID != "app-1" || activities[0].LastSignInActivity == nil {
 		t.Fatalf("activities = %#v, requests=%d", activities, requests)
+	}
+}
+
+// WO-84: Graph authorization diagnostics must survive the public client's wrapping.
+func TestGraphClient_ListUsersPreservesGraphHTTPError(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+	}{
+		{name: "missing permission", code: "Authorization_RequestDenied"},
+		{name: "premium license required", code: "Authentication_RequestFromNonPremiumTenantOrB2CTenant"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"error":{"code":"` + tt.code + `","message":"access denied","innerError":{"request-id":"body-request","client-request-id":"body-client"}}}`
+			client := graphClientForResponse(http.StatusForbidden, body, http.Header{
+				"Request-Id":        []string{"header-request"},
+				"Client-Request-Id": []string{"header-client"},
+			})
+
+			_, err := client.ListUsers(context.Background())
+			var graphErr *GraphHTTPError
+			if !errors.As(err, &graphErr) {
+				t.Fatalf("ListUsers error = %T %v, want *GraphHTTPError", err, err)
+			}
+			if graphErr.StatusCode != http.StatusForbidden || graphErr.Code != tt.code {
+				t.Fatalf("GraphHTTPError = %#v", graphErr)
+			}
+			if graphErr.RequestID != "body-request" || graphErr.ClientRequestID != "body-client" {
+				t.Fatalf("body correlation IDs did not take precedence: %#v", graphErr)
+			}
+		})
+	}
+}
+
+// WO-84: invalid Graph bodies must collapse to one safe typed fallback.
+func TestGraphClient_ErrorBodyFallbacks(t *testing.T) {
+	oversized := strings.Repeat("x", maxGraphErrorBodyBytes+1)
+	tests := []struct {
+		name string
+		body io.ReadCloser
+	}{
+		{name: "empty", body: io.NopCloser(strings.NewReader(""))},
+		{name: "malformed", body: io.NopCloser(strings.NewReader(`{"error":`))},
+		{name: "trailing garbage", body: io.NopCloser(strings.NewReader(`{"error":{}} trailing`))},
+		{name: "oversized", body: io.NopCloser(strings.NewReader(oversized))},
+		{name: "read failure", body: &failingReadCloser{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			closed := &observedReadCloser{ReadCloser: tt.body}
+			client := graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Header: http.Header{
+						"Request-Id": []string{"must-not-survive"},
+					},
+					Body: closed,
+				}, nil
+			}))
+
+			_, err := client.doRequest(context.Background(), "https://graph.microsoft.com/v1.0/users?secret=hidden")
+			var graphErr *GraphHTTPError
+			if !errors.As(err, &graphErr) {
+				t.Fatalf("doRequest error = %T %v, want *GraphHTTPError", err, err)
+			}
+			if graphErr.StatusCode != http.StatusForbidden || graphErr.Code != "" || graphErr.Message != "" ||
+				graphErr.RequestID != "" || graphErr.ClientRequestID != "" {
+				t.Fatalf("fallback retained untrusted fields: %#v", graphErr)
+			}
+			if !closed.closed {
+				t.Fatal("non-success body was not closed")
+			}
+			if strings.Contains(err.Error(), "secret=hidden") || strings.Contains(err.Error(), "must-not-survive") {
+				t.Fatalf("fallback leaked request data: %q", err)
+			}
+		})
+	}
+}
+
+// WO-84: the body and text limits are byte-exact and preserve valid UTF-8.
+func TestGraphClient_ErrorLimits(t *testing.T) {
+	base := []byte(`{"error":{"code":"accepted","message":"ok"}}`)
+	exact := append(base, bytes.Repeat([]byte(" "), maxGraphErrorBodyBytes-len(base))...)
+	client := graphClientForResponse(http.StatusForbidden, string(exact), nil)
+
+	_, err := client.doRequest(context.Background(), "https://graph.microsoft.com/v1.0/users")
+	var graphErr *GraphHTTPError
+	if !errors.As(err, &graphErr) || graphErr.Code != "accepted" {
+		t.Fatalf("exact-limit body error = %T %#v", err, graphErr)
+	}
+
+	message := strings.Repeat("é", maxGraphErrorTextBytes)
+	body, marshalErr := json.Marshal(map[string]any{"error": map[string]any{
+		"code": "unicode", "message": message,
+	}})
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	client = graphClientForResponse(http.StatusForbidden, string(body), nil)
+	_, err = client.doRequest(context.Background(), "https://graph.microsoft.com/v1.0/users")
+	if !errors.As(err, &graphErr) {
+		t.Fatalf("unicode error = %T %v", err, err)
+	}
+	if len(graphErr.Message) != maxGraphErrorTextBytes || !utf8.ValidString(graphErr.Message) {
+		t.Fatalf("message bytes=%d valid=%t", len(graphErr.Message), utf8.ValidString(graphErr.Message))
+	}
+	if len(err.Error()) > maxGraphErrorTextBytes+64 || !utf8.ValidString(err.Error()) {
+		t.Fatalf("rendered error bytes=%d valid=%t", len(err.Error()), utf8.ValidString(err.Error()))
+	}
+}
+
+// WO-84: only sanitized, bounded allowlisted Graph fields may reach diagnostics.
+func TestGraphClient_ErrorSanitizesUntrustedValues(t *testing.T) {
+	body := `{"error":{"code":"Authorization_RequestDenied","message":"denied Bearer body-secret\u0000","innerError":{"request-id":"body\nBearer request-secret"}}}`
+	client := graphClientForResponse(http.StatusForbidden, body, http.Header{
+		"Client-Request-Id": []string{"Bearer header-secret\r\n"},
+		"Authorization":     []string{"Bearer response-secret"},
+		"X-Unrelated":       []string{"https://example.test/?secret=query-secret"},
+	})
+
+	_, err := client.doRequest(context.Background(), "https://graph.microsoft.com/v1.0/users?secret=request-secret")
+	var graphErr *GraphHTTPError
+	if !errors.As(err, &graphErr) {
+		t.Fatalf("doRequest error = %T %v", err, err)
+	}
+	all := graphErr.Code + graphErr.Message + graphErr.RequestID + graphErr.ClientRequestID + err.Error()
+	for _, forbidden := range []string{"body-secret", "request-secret", "header-secret", "response-secret", "query-secret", "\x00", "\n", "\r"} {
+		if strings.Contains(all, forbidden) {
+			t.Fatalf("diagnostics leaked %q: %#v / %q", forbidden, graphErr, err)
+		}
+	}
+}
+
+// WO-84: retry decisions precede decoding and every discarded 429 body is closed.
+func TestGraphClient_RetriesAndClosesRateLimitBodies(t *testing.T) {
+	var calls int
+	var previous *observedReadCloser
+	client := graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		if previous != nil && !previous.closed {
+			t.Fatalf("request %d started before the prior body closed", calls+1)
+		}
+		calls++
+		previous = &observedReadCloser{ReadCloser: io.NopCloser(strings.NewReader(
+			`{"error":{"code":"TooManyRequests","message":"retry later"}}`,
+		))}
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": []string{"0"}},
+			Body:       previous,
+		}, nil
+	}))
+
+	_, err := client.doRequest(context.Background(), "https://graph.microsoft.com/v1.0/users")
+	var graphErr *GraphHTTPError
+	if !errors.As(err, &graphErr) || graphErr.Code != "TooManyRequests" {
+		t.Fatalf("terminal retry error = %T %#v", err, graphErr)
+	}
+	if calls != 3 || previous == nil || !previous.closed {
+		t.Fatalf("calls=%d final body closed=%t", calls, previous != nil && previous.closed)
+	}
+}
+
+// WO-84: successful response body ownership remains with the caller.
+func TestGraphClient_SuccessBodyOwnership(t *testing.T) {
+	body := &observedReadCloser{ReadCloser: io.NopCloser(strings.NewReader(`{"value":[]}`))}
+	client := graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+	}))
+
+	returned, err := client.doRequest(context.Background(), "https://graph.microsoft.com/v1.0/users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.closed {
+		t.Fatal("successful body was closed before returning to caller")
+	}
+	if err := returned.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !body.closed {
+		t.Fatal("caller close did not close successful body")
+	}
+}
+
+// WO-84: roundTripFunc keeps transport edge cases deterministic and network-free.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+// WO-84: observedReadCloser proves response body ownership on every status path.
+type observedReadCloser struct {
+	io.ReadCloser
+	closed bool
+}
+
+func (r *observedReadCloser) Close() error {
+	r.closed = true
+	return r.ReadCloser.Close()
+}
+
+// WO-84: failingReadCloser exercises the deterministic transport read fallback.
+type failingReadCloser struct{}
+
+func (*failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+func (*failingReadCloser) Close() error             { return nil }
+
+// WO-84: build the smallest Graph client around a deterministic synthetic response.
+func graphClientForResponse(status int, body string, header http.Header) *graphClient {
+	return graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: status,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	}))
+}
+
+// WO-84: transport injection avoids widening production configuration for error tests.
+func graphClientWithTransport(transport http.RoundTripper) *graphClient {
+	return &graphClient{
+		cred:   staticTokenCredential{},
+		client: &http.Client{Transport: transport},
 	}
 }
 
