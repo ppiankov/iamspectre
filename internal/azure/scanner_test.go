@@ -54,7 +54,7 @@ func TestAzureScanner_UserActivityCoverageUsesTenantScope(t *testing.T) {
 	}
 }
 
-// WO-81: protected activity failures retain base checks and expose an exact coverage cause.
+// WO-81@v4: protected activity failures retain base checks and expose an exact coverage cause.
 func TestAzureScanner_UserActivityAuthorizationDegradesWithoutErasingBaseUsers(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -102,7 +102,7 @@ func TestAzureScanner_UserActivityAuthorizationDegradesWithoutErasingBaseUsers(t
 	}
 }
 
-// WO-81: authorized activity rows enrich every timestamp consumer without a gap.
+// WO-81@v4: authorized activity rows enrich every timestamp consumer without a gap.
 func TestAzureScanner_UserActivityJoinUsesCompleteEvidence(t *testing.T) {
 	oldInteractive := time.Now().AddDate(0, 0, -120)
 	recentSuccessful := time.Now().AddDate(0, 0, -2)
@@ -213,7 +213,7 @@ func TestAzureScanner_ScanAll_Integration(t *testing.T) {
 				UserType: "Member",
 			},
 		},
-		// WO-81: integration activity arrives through the separately authorized query.
+		// WO-81@v4: integration activity arrives through the separately authorized query.
 		userActivities: []UserSignInActivity{
 			{ID: "user-1", SignInActivity: &SignInActivity{LastSignInDateTime: &lastSignIn}},
 			{ID: "inactive-principal", SignInActivity: &SignInActivity{LastSignInDateTime: &lastSignIn}},

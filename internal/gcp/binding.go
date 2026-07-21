@@ -47,7 +47,7 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 		ObservedPrincipalIDs:                make(map[string]struct{}),
 		PrincipalIdentityAccountingComplete: true,
 	}
-	// WO-83: project-number lookup is independent evidence; failure must preserve candidates.
+	// WO-83@v5: project-number lookup is independent evidence; failure must preserve candidates.
 	project, projectErr := s.api.GetProject(ctx, s.project)
 	if projectErr == nil && (project == nil || project.ProjectNumber <= 0) {
 		projectErr = fmt.Errorf("project metadata missing project number")
@@ -84,17 +84,17 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 				continue
 			}
 			if binding.Role == "roles/editor" && strings.HasSuffix(normalizedEmail, googleAPIsServiceAgentDomain) {
-				// WO-83: only cloudservices Editor bindings depend on local project-number correlation.
+				// WO-83@v5: only cloudservices Editor bindings depend on local project-number correlation.
 				classificationCandidates++
 			}
-			// WO-83: suppress only the exact local provider-owned Editor grant.
+			// WO-83@v5: suppress only the exact local provider-owned Editor grant.
 			if binding.Role == "roles/editor" && projectErr == nil && normalizedEmail == localGoogleAPIsAgent {
 				continue
 			}
 
 			recommendation := "Replace with a more restrictive role following least-privilege principle"
 			if binding.Role == "roles/editor" && projectErr == nil && normalizedEmail == localDefaultCompute {
-				// WO-83: default Compute accounts are customer-managed; preserve the finding with safe advice.
+				// WO-83@v5: default Compute accounts are customer-managed; preserve the finding with safe advice.
 				recommendation = "Use Policy Simulator or IAM role recommendations before replacing the Editor role"
 			}
 
@@ -115,7 +115,7 @@ func (s *BindingScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.Sca
 		}
 	}
 	if projectErr != nil && classificationCandidates > 0 {
-		// WO-83: fail closed while making the managed-grant classification gap explicit.
+		// WO-83@v5: fail closed while making the managed-grant classification gap explicit.
 		result.Errors = append(result.Errors, fmt.Sprintf("classify managed service agents: %v", projectErr))
 		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
 			Capability: "gcp_managed_service_agent_classification", Cause: "project_metadata_unavailable",

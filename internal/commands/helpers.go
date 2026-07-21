@@ -16,20 +16,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// WO-86: ErrIncompleteScan lets command callers distinguish partial evidence from I/O failure.
+// WO-86@v2: ErrIncompleteScan lets command callers distinguish partial evidence from I/O failure.
 var ErrIncompleteScan = errors.New("scan incomplete")
 
-// WO-86: IncompleteScanError records how many scanner failures made the audit partial.
+// WO-86@v2: IncompleteScanError records how many scanner failures made the audit partial.
 type IncompleteScanError struct {
 	ErrorCount int
 }
 
-// WO-86: Error gives shell users a concise nonzero-exit reason after report delivery.
+// WO-86@v2: Error gives shell users a concise nonzero-exit reason after report delivery.
 func (e *IncompleteScanError) Error() string {
 	return fmt.Sprintf("scan incomplete: %d scanner error(s)", e.ErrorCount)
 }
 
-// WO-86: Unwrap supports errors.Is while errors.As retains the count.
+// WO-86@v2: Unwrap supports errors.Is while errors.As retains the count.
 func (e *IncompleteScanError) Unwrap() error {
 	return ErrIncompleteScan
 }
@@ -178,7 +178,7 @@ func analyzeAndReport(result *iam.ScanResult, opts postScanOptions) (returnErr e
 		w = output
 		defer func() {
 			if err := output.Close(); err != nil {
-				// WO-86: output integrity outranks only success or the post-report partial sentinel.
+				// WO-86@v2: output integrity outranks only success or the post-report partial sentinel.
 				if returnErr == nil || errors.Is(returnErr, ErrIncompleteScan) {
 					returnErr = fmt.Errorf("close output file: %w", err)
 				}
@@ -190,7 +190,7 @@ func analyzeAndReport(result *iam.ScanResult, opts postScanOptions) (returnErr e
 	data := report.Data{
 		Tool:      "iamspectre",
 		Version:   version,
-		Status:    report.CompletionStateFor(analysis.Errors), // WO-86: derive status once for every reporter.
+		Status:    report.CompletionStateFor(analysis.Errors), // WO-86@v2: derive status once for every reporter.
 		Timestamp: opts.timestamp,
 		Target:    report.Target{Type: opts.targetType, URIHash: computeTargetHash(opts.targetID)},
 		Config: report.ReportConfig{
@@ -211,7 +211,7 @@ func analyzeAndReport(result *iam.ScanResult, opts postScanOptions) (returnErr e
 		return err
 	}
 	if len(analysis.Errors) > 0 {
-		// WO-86: deliver retained evidence before making partial scans fail at the command boundary.
+		// WO-86@v2: deliver retained evidence before making partial scans fail at the command boundary.
 		return &IncompleteScanError{ErrorCount: len(analysis.Errors)}
 	}
 	return nil

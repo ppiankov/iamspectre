@@ -29,8 +29,8 @@ func (staticTokenCredential) GetToken(context.Context, policy.TokenRequestOption
 type mockGraph struct {
 	users           []User
 	usersErr        error
-	userActivities  []UserSignInActivity
-	userActivityErr error
+	userActivities  []UserSignInActivity // WO-81@v4: protected activity fixtures stay separate from base users.
+	userActivityErr error                // WO-81@v4: inject source-wide activity failures without erasing users.
 	apps            []Application
 	appsErr         error
 	sps             []ServicePrincipal
@@ -49,7 +49,7 @@ func (m *mockGraph) ListUsers(_ context.Context) ([]User, error) {
 	return m.users, m.usersErr
 }
 
-// WO-81: expose the protected activity source independently from base users.
+// WO-81@v4: expose the protected activity source independently from base users.
 func (m *mockGraph) ListUserSignInActivities(_ context.Context) ([]UserSignInActivity, error) {
 	return m.userActivities, m.userActivityErr
 }

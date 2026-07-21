@@ -81,7 +81,7 @@ func TestCRMClientGetIAMPolicy(t *testing.T) {
 	}
 }
 
-// WO-83: pin the authoritative project-number lookup used for managed-agent identity.
+// WO-83@v5: pin the authoritative project-number lookup used for managed-agent identity.
 func TestCRMClientGetProject(t *testing.T) {
 	_, crmService := newGCPTestServices(t, func(request *http.Request) *http.Response {
 		if request.Method != http.MethodGet || request.URL.Path != "/v1/projects/test-project" {

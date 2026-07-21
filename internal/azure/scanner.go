@@ -26,6 +26,7 @@ func NewAzureScanner(client *Client, scanCfg iam.ScanConfig) *AzureScanner {
 }
 
 // ScanAll runs all Azure AD IAM scanners and returns combined results.
+// WO-81@v4: fetch base users and protected activity through independent evidence boundaries.
 func (s *AzureScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 	slog.Info("Scanning Azure AD tenant", "tenant_id", s.client.TenantID)
 
@@ -34,7 +35,7 @@ func (s *AzureScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 	var userActivities []UserSignInActivity
 	var userActivityErr error
 	if usersErr == nil {
-		// WO-81: authorization for protected activity can no longer erase the base inventory.
+		// WO-81@v4: authorization for protected activity can no longer erase the base inventory.
 		userActivities, userActivityErr = s.client.Graph.ListUserSignInActivities(ctx)
 		users = joinUserSignInActivity(users, userActivities)
 	}
@@ -47,24 +48,24 @@ func (s *AzureScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 	principalActivity := buildPrincipalActivityMap(users, sps, s.scanCfg.StaleDays)
 	roleActivityCauses := make(map[string]string)
 	if userActivityErr != nil {
-		// WO-81: attribute the user-source failure only to principals from that source.
+		// WO-81@v4: attribute the user-source failure only to principals from that source.
 		for _, user := range users {
 			roleActivityCauses[user.ID] = userActivityCause
 		}
 	}
 
 	scanners := []iam.Scanner{
-		NewUserScannerWithActivityEvidence(s.client.Graph, users, usersErr, userActivityErr, userActivityCause, "azure-tenant:"+s.client.TenantID), // WO-81: preserve base users and typed activity degradation.
+		NewUserScannerWithActivityEvidence(s.client.Graph, users, usersErr, userActivityErr, userActivityCause, "azure-tenant:"+s.client.TenantID), // WO-81@v4: preserve base users and typed activity degradation.
 		NewAppScanner(s.client.Graph),
 		NewServicePrincipalScannerWithActivityCoverage(s.client.Graph, sps, spsErr, spActivityErr, spCoverage),
-		NewRoleScannerWithActivityCauses(s.client.Graph, principalActivity, "azure-tenant:"+s.client.TenantID, roleActivityCauses), // WO-81: preserve principal-scoped activity causes in role coverage.
+		NewRoleScannerWithActivityCauses(s.client.Graph, principalActivity, "azure-tenant:"+s.client.TenantID, roleActivityCauses), // WO-81@v4: preserve principal-scoped activity causes in role coverage.
 	}
 
 	// WO-26@v2: provider setup stays local while orchestration policy is shared.
 	return iam.RunScanners(ctx, scanners, s.scanCfg)
 }
 
-// WO-81: join protected activity by immutable user ID without trusting base-response enrichment.
+// WO-81@v4: join protected activity by immutable user ID without trusting base-response enrichment.
 func joinUserSignInActivity(users []User, activities []UserSignInActivity) []User {
 	joined := append([]User(nil), users...)
 	byUserID := make(map[string]*SignInActivity, len(activities))
@@ -79,7 +80,7 @@ func joinUserSignInActivity(users []User, activities []UserSignInActivity) []Use
 	return joined
 }
 
-// WO-81: classify only known Graph gating failures; every other failure stays explicitly incomplete.
+// WO-81@v4: classify only known Graph gating failures; every other failure stays explicitly incomplete.
 func classifyUserActivityError(err error) string {
 	if err == nil {
 		return userActivityUnknownCause

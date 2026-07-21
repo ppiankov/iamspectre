@@ -10,11 +10,12 @@ import (
 	crmv1 "google.golang.org/api/cloudresourcemanager/v1"
 )
 
+// WO-83@v5: mockCRM supplies authoritative project identity and its failure mode.
 type mockCRM struct {
 	policy     *crmv1.Policy
 	policyErr  error
-	project    *crmv1.Project
-	projectErr error
+	project    *crmv1.Project // WO-83@v5: provide authoritative project identity to scanner tests.
+	projectErr error          // WO-83@v5: exercise fail-closed project identity lookup.
 }
 
 const testProjectNumber int64 = 123456789
@@ -26,7 +27,7 @@ func (m *mockCRM) GetIamPolicy(_ context.Context, _ string) (*crmv1.Policy, erro
 	return m.policy, nil
 }
 
-// WO-83: provide authoritative project-number evidence to binding tests.
+// WO-83@v5: provide authoritative project-number evidence to binding tests.
 func (m *mockCRM) GetProject(_ context.Context, _ string) (*crmv1.Project, error) {
 	if m.projectErr != nil {
 		return nil, m.projectErr
@@ -96,7 +97,7 @@ func TestBindingScanner_EditorRole(t *testing.T) {
 	}
 }
 
-// WO-83: suppress only the exact local Google APIs Service Agent Editor grant.
+// WO-83@v5: suppress only the exact local Google APIs Service Agent Editor grant.
 func TestBindingScanner_LocalGoogleAPIsServiceAgentEditor(t *testing.T) {
 	localAgent := fmt.Sprintf("%d@cloudservices.gserviceaccount.com", testProjectNumber)
 	mock := &mockCRM{policy: &crmv1.Policy{Bindings: []*crmv1.Binding{{
@@ -112,7 +113,7 @@ func TestBindingScanner_LocalGoogleAPIsServiceAgentEditor(t *testing.T) {
 	}
 }
 
-// WO-83: customer-controlled and external identities remain actionable.
+// WO-83@v5: customer-controlled and external identities remain actionable.
 func TestBindingScanner_PreservesActionableEditorAndOwnerBindings(t *testing.T) {
 	localAgent := fmt.Sprintf("%d@cloudservices.gserviceaccount.com", testProjectNumber)
 	localDefaultCompute := fmt.Sprintf("%d-compute@developer.gserviceaccount.com", testProjectNumber)
@@ -139,7 +140,7 @@ func TestBindingScanner_PreservesActionableEditorAndOwnerBindings(t *testing.T) 
 	}
 }
 
-// WO-83: missing project identity fails closed and records the unevaluated classification.
+// WO-83@v5: missing project identity fails closed and records the unevaluated classification.
 func TestBindingScanner_ProjectMetadataFailurePreservesCandidates(t *testing.T) {
 	mock := &mockCRM{
 		policy: &crmv1.Policy{Bindings: []*crmv1.Binding{{

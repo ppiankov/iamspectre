@@ -9,7 +9,7 @@ type jsonEnvelope struct {
 
 // Generate produces spectre/v1 envelope JSON output.
 func (r *JSONReporter) Generate(data Data) error {
-	data.Status = resolvedCompletionState(data) // WO-86: retained errors structurally force partial JSON.
+	data.Status = resolvedCompletionState(data) // WO-86@v2: retained errors structurally force partial JSON.
 	envelope := jsonEnvelope{
 		Schema: "spectre/v1",
 		Data:   data,

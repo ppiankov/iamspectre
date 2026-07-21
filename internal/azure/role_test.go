@@ -102,7 +102,7 @@ func TestRoleScanner_NilActivityMap(t *testing.T) {
 	}
 }
 
-// WO-81: source-wide user gating must not relabel unrelated principal evidence.
+// WO-81@v4: source-wide user gating must not relabel unrelated principal evidence.
 func TestRoleScanner_GroupsUnknownCoverageByPrincipalCause(t *testing.T) {
 	mock := &mockGraph{roleAssigns: []DirectoryRoleAssignment{
 		{ID: "user-assignment", PrincipalID: "user-1"},

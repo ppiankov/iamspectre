@@ -27,8 +27,8 @@ type UserScanner struct {
 	api           GraphAPI
 	users         []User
 	fetchErr      error
-	activityErr   error  // WO-81: preserve a separately failed protected evidence source.
-	activityCause string // WO-81: keep source gating distinct from absent per-user rows.
+	activityErr   error  // WO-81@v4: preserve a separately failed protected evidence source.
+	activityCause string // WO-81@v4: keep source gating distinct from absent per-user rows.
 	coverageScope string // WO-77: bind missing user activity evidence to one Azure tenant.
 }
 
@@ -42,7 +42,7 @@ func NewUserScannerWithScope(api GraphAPI, users []User, fetchErr error, coverag
 	return NewUserScannerWithActivityEvidence(api, users, fetchErr, nil, userActivityUnknownCause, coverageScope)
 }
 
-// WO-81: NewUserScannerWithActivityEvidence binds protected-source diagnostics to base users.
+// WO-81@v4: NewUserScannerWithActivityEvidence binds protected-source diagnostics to base users.
 func NewUserScannerWithActivityEvidence(api GraphAPI, users []User, fetchErr, activityErr error, activityCause, coverageScope string) *UserScanner {
 	if activityCause == "" {
 		activityCause = userActivityUnknownCause
@@ -67,7 +67,7 @@ func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 		return result, fmt.Errorf("fetch users: %w", s.fetchErr)
 	}
 	if s.activityErr != nil {
-		// WO-81: a protected-source failure is explicit while ungated checks continue.
+		// WO-81@v4: a protected-source failure is explicit while ungated checks continue.
 		result.Errors = append(result.Errors, fmt.Sprintf("fetch user sign-in activity: %v", s.activityErr))
 	}
 

@@ -13,8 +13,8 @@ type RoleScanner struct {
 	api               GraphAPI
 	principalActivity map[string]PrincipalActivityState
 	coverageScope     string
-	coverageCause     string            // WO-81: preserve a default source-wide activity cause.
-	coverageCauses    map[string]string // WO-81: prevent one source failure from relabeling unrelated principals.
+	coverageCause     string            // WO-81@v4: preserve a default source-wide activity cause.
+	coverageCauses    map[string]string // WO-81@v4: prevent one source failure from relabeling unrelated principals.
 }
 
 // WO-73@v1: NewRoleScanner preserves unknown evidence instead of treating absence as inactivity.
@@ -27,7 +27,7 @@ func NewRoleScannerWithScope(api GraphAPI, principalActivity map[string]Principa
 	return NewRoleScannerWithActivityCause(api, principalActivity, coverageScope, "principal_activity_unknown")
 }
 
-// WO-81: NewRoleScannerWithActivityCause carries a tenant-wide activity-source failure into coverage.
+// WO-81@v4: NewRoleScannerWithActivityCause carries a tenant-wide activity-source failure into coverage.
 func NewRoleScannerWithActivityCause(api GraphAPI, principalActivity map[string]PrincipalActivityState, coverageScope, coverageCause string) *RoleScanner {
 	if coverageCause == "" {
 		coverageCause = "principal_activity_unknown"
@@ -38,7 +38,7 @@ func NewRoleScannerWithActivityCause(api GraphAPI, principalActivity map[string]
 	}
 }
 
-// WO-81: NewRoleScannerWithActivityCauses carries exact source failures per principal.
+// WO-81@v4: NewRoleScannerWithActivityCauses carries exact source failures per principal.
 func NewRoleScannerWithActivityCauses(api GraphAPI, principalActivity map[string]PrincipalActivityState, coverageScope string, coverageCauses map[string]string) *RoleScanner {
 	return &RoleScanner{
 		api: api, principalActivity: principalActivity, coverageScope: coverageScope,

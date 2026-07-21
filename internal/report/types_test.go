@@ -17,7 +17,7 @@ func testData() Data {
 	return Data{
 		Tool:      "iamspectre",
 		Version:   "0.1.0",
-		Status:    CompletionComplete,
+		Status:    CompletionComplete, // WO-86@v2: fixture reports carry explicit completion state.
 		Timestamp: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC),
 		Target: Target{
 			Type:    "aws-account",
@@ -84,7 +84,8 @@ func TestTextReporter(t *testing.T) {
 	}
 }
 
-// WO-86: zero findings from an incomplete scan must never render as an all-clear.
+// WO-38: zero findings must not hide summary or scanner failures.
+// WO-86@v2: zero findings from an incomplete scan must never render as an all-clear.
 func TestTextReporter_NoFindings(t *testing.T) {
 	var buf bytes.Buffer
 	r := &TextReporter{Writer: &buf}
@@ -115,7 +116,7 @@ func TestTextReporter_NoFindings(t *testing.T) {
 	}
 }
 
-// WO-86: a complete empty audit preserves the existing concise all-clear.
+// WO-86@v2: a complete empty audit preserves the existing concise all-clear.
 func TestTextReporter_CompleteNoFindings(t *testing.T) {
 	var buf bytes.Buffer
 	data := testData()
@@ -130,7 +131,7 @@ func TestTextReporter_CompleteNoFindings(t *testing.T) {
 	}
 }
 
-// WO-86: completion state is derived deterministically from scanner errors.
+// WO-86@v2: completion state is derived deterministically from scanner errors.
 func TestCompletionStateFor(t *testing.T) {
 	if got := CompletionStateFor(nil); got != CompletionComplete {
 		t.Fatalf("empty errors status = %q", got)
@@ -259,6 +260,7 @@ func TestTextReporter_TruncatesByRune(t *testing.T) {
 	}
 }
 
+// WO-86@v2: native JSON exposes explicit completion state.
 func TestJSONReporter(t *testing.T) {
 	var buf bytes.Buffer
 	r := &JSONReporter{Writer: &buf}
@@ -283,7 +285,7 @@ func TestJSONReporter(t *testing.T) {
 	}
 }
 
-// WO-86: JSON must never serialize a complete status beside retained scanner errors.
+// WO-86@v2: JSON must never serialize a complete status beside retained scanner errors.
 func TestJSONReporter_NormalizesPartialStatus(t *testing.T) {
 	var buf bytes.Buffer
 	data := testData()

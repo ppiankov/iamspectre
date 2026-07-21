@@ -51,7 +51,7 @@ func (r *TextReporter) Generate(data Data) error {
 	}
 	w.println("")
 	if partial {
-		// WO-86: state incompleteness before findings so zero rows cannot read as an all-clear.
+		// WO-86@v2: state incompleteness before findings so zero rows cannot read as an all-clear.
 		w.println("Scan incomplete: one or more checks failed; results below are partial.")
 		w.println("")
 	}
@@ -101,7 +101,7 @@ func (r *TextReporter) Generate(data Data) error {
 	return w.err
 }
 
-// WO-86: retained errors structurally force partial status even for legacy callers.
+// WO-86@v2: retained errors structurally force partial status even for legacy callers.
 func resolvedCompletionState(data Data) CompletionState {
 	if len(data.Errors) > 0 || data.Status == CompletionPartial {
 		return CompletionPartial

@@ -12,7 +12,7 @@ const (
 	PrincipalActivityStale   PrincipalActivityState = "stale"
 )
 
-// WO-81: coverage causes distinguish source-wide gating from per-principal absence.
+// WO-81@v4: coverage causes distinguish source-wide gating from per-principal absence.
 const (
 	userActivityUnknownCause          = "user_activity_unknown"
 	userActivityPermissionDeniedCause = "permission_or_role_denied"
@@ -37,7 +37,7 @@ type SignInActivity struct {
 	LastSuccessfulSignInDateTime     *time.Time `json:"lastSuccessfulSignInDateTime"`
 }
 
-// WO-81: UserSignInActivity carries only the separately authorized activity evidence.
+// WO-81@v4: UserSignInActivity carries only the separately authorized activity evidence.
 type UserSignInActivity struct {
 	ID             string          `json:"id"`
 	SignInActivity *SignInActivity `json:"signInActivity"`

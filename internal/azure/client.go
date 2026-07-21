@@ -40,7 +40,7 @@ const graphScope = "https://graph.microsoft.com/.default"
 // WO-68@v3: GraphAPI includes the separate service-principal activity evidence source.
 type GraphAPI interface {
 	ListUsers(ctx context.Context) ([]User, error)
-	ListUserSignInActivities(ctx context.Context) ([]UserSignInActivity, error) // WO-81: isolate separately authorized evidence.
+	ListUserSignInActivities(ctx context.Context) ([]UserSignInActivity, error) // WO-81@v4: isolate separately authorized evidence.
 	ListApplications(ctx context.Context) ([]Application, error)
 	ListServicePrincipals(ctx context.Context) ([]ServicePrincipal, error)
 	ListServicePrincipalSignInActivities(ctx context.Context) ([]ServicePrincipalSignInActivity, error)
@@ -151,6 +151,7 @@ func newGraphClient(cred azcore.TokenCredential) *graphClient {
 	}
 }
 
+// WO-81@v4: fetch base user identity without coupling it to protected activity.
 func (g *graphClient) ListUsers(ctx context.Context) ([]User, error) {
 	url := graphBaseURL + "/users?$select=id,displayName,userPrincipalName,userType,createdDateTime&$top=999"
 	var all []User
@@ -161,7 +162,7 @@ func (g *graphClient) ListUsers(ctx context.Context) ([]User, error) {
 	return all, nil
 }
 
-// WO-81: fetch protected activity separately so authorization cannot erase base users.
+// WO-81@v4: fetch protected activity separately so authorization cannot erase base users.
 func (g *graphClient) ListUserSignInActivities(ctx context.Context) ([]UserSignInActivity, error) {
 	url := graphBaseURL + "/users?$select=id,signInActivity&$top=500"
 	var all []UserSignInActivity
