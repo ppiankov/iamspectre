@@ -321,6 +321,199 @@ func TestGraphClient_SuccessBodyOwnership(t *testing.T) {
 	}
 }
 
+// WO-100@v1: pin every stable Graph list route, query, pagination step, and decoded row count.
+func TestGraphClientListMethods(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		query map[string]string
+		call  func(*graphClient) (int, error)
+	}{
+		{
+			name: "users",
+			path: "/v1.0/users",
+			query: map[string]string{
+				"$select": "id,displayName,userPrincipalName,userType,createdDateTime,signInActivity",
+				"$top":    "999",
+			},
+			call: func(client *graphClient) (int, error) {
+				items, err := client.ListUsers(context.Background())
+				return len(items), err
+			},
+		},
+		{
+			name: "applications",
+			path: "/v1.0/applications",
+			query: map[string]string{
+				"$select": "id,appId,displayName,signInAudience,passwordCredentials,keyCredentials",
+				"$top":    "999",
+			},
+			call: func(client *graphClient) (int, error) {
+				items, err := client.ListApplications(context.Background())
+				return len(items), err
+			},
+		},
+		{
+			name: "service principals",
+			path: "/v1.0/servicePrincipals",
+			query: map[string]string{
+				"$select": "id,appId,displayName",
+				"$expand": "appRoleAssignments",
+				"$top":    "999",
+			},
+			call: func(client *graphClient) (int, error) {
+				items, err := client.ListServicePrincipals(context.Background())
+				return len(items), err
+			},
+		},
+		{
+			name:  "directory role assignments",
+			path:  "/v1.0/roleManagement/directory/roleAssignments",
+			query: map[string]string{},
+			call: func(client *graphClient) (int, error) {
+				items, err := client.ListDirectoryRoleAssignments(context.Background())
+				return len(items), err
+			},
+		},
+		{
+			name:  "authentication methods",
+			path:  "/v1.0/users/user-id/authentication/methods",
+			query: map[string]string{},
+			call: func(client *graphClient) (int, error) {
+				items, err := client.ListAuthenticationMethods(context.Background(), "user-id")
+				return len(items), err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requests := 0
+			client := graphClientWithTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requests++
+				if request.Header.Get("Authorization") != "Bearer test" {
+					t.Fatalf("authorization = %q", request.Header.Get("Authorization"))
+				}
+				if requests == 1 {
+					if request.URL.Path != test.path {
+						t.Fatalf("path = %q, want %q", request.URL.Path, test.path)
+					}
+					for key, want := range test.query {
+						if got := request.URL.Query().Get(key); got != want {
+							t.Fatalf("query %s = %q, want %q", key, got, want)
+						}
+					}
+					return graphJSONResponse(http.StatusOK, `{"value":[{"id":"one"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/next"}`), nil
+				}
+				if request.URL.Path != "/v1.0/next" {
+					t.Fatalf("next path = %q", request.URL.Path)
+				}
+				return graphJSONResponse(http.StatusOK, `{"value":[{"id":"two"}]}`), nil
+			}))
+
+			count, err := test.call(client)
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if count != 2 || requests != 2 {
+				t.Fatalf("count = %d, requests = %d", count, requests)
+			}
+		})
+	}
+}
+
+// WO-100@v1: keep each public Graph method's context while preserving typed provider details.
+func TestGraphClientListMethodsWrapGraphErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		wantPrefix string
+		call       func(*graphClient) error
+	}{
+		{
+			name: "applications", wantPrefix: "list applications:",
+			call: func(client *graphClient) error { _, err := client.ListApplications(context.Background()); return err },
+		},
+		{
+			name: "service principals", wantPrefix: "list service principals:",
+			call: func(client *graphClient) error {
+				_, err := client.ListServicePrincipals(context.Background())
+				return err
+			},
+		},
+		{
+			name: "directory role assignments", wantPrefix: "list directory role assignments:",
+			call: func(client *graphClient) error {
+				_, err := client.ListDirectoryRoleAssignments(context.Background())
+				return err
+			},
+		},
+		{
+			name: "authentication methods", wantPrefix: "list authentication methods for user-id:",
+			call: func(client *graphClient) error {
+				_, err := client.ListAuthenticationMethods(context.Background(), "user-id")
+				return err
+			},
+		},
+		{
+			name: "security defaults", wantPrefix: "get security defaults:",
+			call: func(client *graphClient) error {
+				_, err := client.GetSecurityDefaults(context.Background())
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := graphClientForResponse(http.StatusForbidden, `{"error":{"code":"Authorization_RequestDenied","message":"denied"}}`, nil)
+			err := test.call(client)
+			if err == nil || !strings.HasPrefix(err.Error(), test.wantPrefix) {
+				t.Fatalf("error = %v, want prefix %q", err, test.wantPrefix)
+			}
+			var graphErr *GraphHTTPError
+			if !errors.As(err, &graphErr) || graphErr.Code != "Authorization_RequestDenied" {
+				t.Fatalf("typed Graph error = %#v", graphErr)
+			}
+		})
+	}
+}
+
+// WO-100@v1: cover security-default decoding and the production Graph client defaults without credentials.
+func TestGraphClientSecurityDefaultsAndDefaults(t *testing.T) {
+	client := graphClientWithTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy" {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		return graphJSONResponse(http.StatusOK, `{"isEnabled":true}`), nil
+	}))
+	policy, err := client.GetSecurityDefaults(context.Background())
+	if err != nil {
+		t.Fatalf("get security defaults: %v", err)
+	}
+	if policy == nil || !policy.IsEnabled {
+		t.Fatalf("policy = %#v", policy)
+	}
+
+	malformed := graphClientForResponse(http.StatusOK, `{`, nil)
+	if _, err := malformed.GetSecurityDefaults(context.Background()); err == nil || !strings.HasPrefix(err.Error(), "decode security defaults:") {
+		t.Fatalf("decode error = %v", err)
+	}
+
+	productionDefaults := newGraphClient(staticTokenCredential{})
+	if productionDefaults.client == nil || productionDefaults.client.Timeout != 30*time.Second || productionDefaults.betaBaseURL != graphBetaBaseURL {
+		t.Fatalf("production defaults = %#v", productionDefaults)
+	}
+}
+
+// WO-100@v1: build a minimal Graph response for deterministic transport tests.
+func graphJSONResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
 // WO-84@v3: roundTripFunc keeps transport edge cases deterministic and network-free.
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
