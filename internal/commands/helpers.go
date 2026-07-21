@@ -25,10 +25,11 @@ type commonScanFlags struct {
 }
 
 // WO-27@v2: register the five flags shared by every cloud command in one place.
+// WO-102@v3: advertise the customer report format at that shared boundary.
 func registerCommonScanFlags(cmd *cobra.Command, flags *commonScanFlags) {
 	cmd.Flags().IntVar(&flags.staleDays, "stale-days", 90, "Inactivity threshold (days)")
 	cmd.Flags().StringVar(&flags.severityMin, "severity-min", "low", "Minimum severity to report: critical, high, medium, low")
-	cmd.Flags().StringVar(&flags.format, "format", "text", "Output format: text, json, sarif, spectrehub")
+	cmd.Flags().StringVar(&flags.format, "format", "text", "Output format: text, report, json, sarif, spectrehub")
 	cmd.Flags().StringVarP(&flags.outputFile, "output", "o", "", "Output file path (default: stdout)")
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", defaultScanTimeout, "Scan timeout")
 }
@@ -116,18 +117,21 @@ func enhanceError(action string, err error) error {
 }
 
 // WO-25@v2: construct reporters without taking ownership of their writer.
+// WO-102@v3: route the customer report through the same factory as every provider format.
 func selectReporter(format string, w io.Writer) (report.Reporter, error) {
 	switch format {
 	case "json":
 		return &report.JSONReporter{Writer: w}, nil
 	case "text":
 		return &report.TextReporter{Writer: w}, nil
+	case "report":
+		return &report.ReportReporter{Writer: w}, nil // WO-102@v3: expose the customer Markdown artifact through every provider.
 	case "sarif":
 		return &report.SARIFReporter{Writer: w}, nil
 	case "spectrehub":
 		return &report.SpectreHubReporter{Writer: w}, nil
 	default:
-		return nil, fmt.Errorf("unsupported format: %s (use text, json, sarif, or spectrehub)", format)
+		return nil, fmt.Errorf("unsupported format: %s (use text, report, json, sarif, or spectrehub)", format)
 	}
 }
 

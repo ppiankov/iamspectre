@@ -48,6 +48,7 @@ func TestRoleScanner_UnusedRole(t *testing.T) {
 }
 
 // WO-54@v3: creation age cannot substitute for unavailable RoleLastUsed evidence.
+// WO-104@v3: missing usage evidence belongs to the coverage plane, not per-role errors.
 func TestRoleScanner_NeverUsedRole(t *testing.T) {
 	oldCreateDate := time.Now().UTC().AddDate(-1, 0, 0)
 	mock := &mockIAM{
@@ -71,9 +72,24 @@ func TestRoleScanner_NeverUsedRole(t *testing.T) {
 	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
 		t.Fatal("missing RoleLastUsed evidence must not emit UNUSED_ROLE")
 	}
-	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "never-used") ||
-		!strings.Contains(result.Errors[0], "RoleLastUsed evidence is unavailable") {
-		t.Fatalf("errors = %#v, want role-qualified evidence error", result.Errors)
+	assertRoleUsageCoverage(t, result, 1, 0, 1)
+}
+
+// WO-104@v3: validate the canonical role-usage observation without coupling to reporter aggregation.
+func assertRoleUsageCoverage(t *testing.T, result *iam.ScanResult, affected, evaluable, total int) {
+	t.Helper()
+	if len(result.Errors) != 0 {
+		t.Fatalf("errors = %#v, want no missing-evidence diagnostics", result.Errors)
+	}
+	if len(result.CoverageGaps) != 1 {
+		t.Fatalf("coverage gaps = %#v, want one role-usage observation", result.CoverageGaps)
+	}
+	gap := result.CoverageGaps[0]
+	if gap.Capability != "aws_role_last_used" || gap.Cause != "evidence_unavailable" ||
+		gap.Scope != "aws-account:123456789012" || gap.FindingID != iam.FindingUnusedRole ||
+		gap.AffectedCount != affected || gap.EvaluableCount != evaluable || gap.TotalCount != total ||
+		gap.MaxConsequence != iam.SeverityMedium {
+		t.Fatalf("coverage gap = %#v, want affected=%d evaluable=%d total=%d", gap, affected, evaluable, total)
 	}
 }
 
@@ -230,6 +246,7 @@ func TestIsIdentityCenterRole(t *testing.T) {
 }
 
 // WO-44@v2: opt-in service-linked findings use restrained severity and guidance.
+// WO-104@v3: opted-in roles contribute to the usage-evidence denominator.
 func TestRoleScanner_ServiceLinkedRoleIncluded(t *testing.T) {
 	created := time.Now().UTC().AddDate(-2, 0, 0)
 	mock := &mockIAM{roles: []iamtypes.Role{{
@@ -247,9 +264,7 @@ func TestRoleScanner_ServiceLinkedRoleIncluded(t *testing.T) {
 	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
 		t.Fatal("missing RoleLastUsed evidence must not emit UNUSED_ROLE")
 	}
-	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "AWSServiceRoleForExample") {
-		t.Fatalf("errors = %#v, want role-qualified evidence error", result.Errors)
-	}
+	assertRoleUsageCoverage(t, result, 1, 0, 1)
 }
 
 // WO-44@v2: UNUSED_ROLE suppression must not bypass independent trust analysis.
@@ -276,6 +291,7 @@ func TestRoleScanner_ServiceLinkedRoleStillChecksTrust(t *testing.T) {
 
 // WO-50: missing creation evidence cannot justify a fabricated unused-role age.
 // WO-54@v3: missing RoleLastUsed evidence is independent of creation evidence.
+// WO-104@v3: mixed evidence records one unavailable and one evaluable opportunity.
 func TestRoleScanner_MissingCreateDate(t *testing.T) {
 	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}}`)
 	stale := time.Now().UTC().AddDate(0, 0, -120)
@@ -303,9 +319,7 @@ func TestRoleScanner_MissingCreateDate(t *testing.T) {
 			t.Fatal("missing CreateDate must not emit UNUSED_ROLE")
 		}
 	}
-	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "unknown-age") {
-		t.Fatalf("errors = %#v, want one role-qualified error", result.Errors)
-	}
+	assertRoleUsageCoverage(t, result, 1, 1, 2)
 	if findFinding(result.Findings, iam.FindingCrossAccountTrust) == nil {
 		t.Fatal("missing CreateDate must not bypass trust evaluation")
 	}
@@ -315,6 +329,7 @@ func TestRoleScanner_MissingCreateDate(t *testing.T) {
 }
 
 // WO-51: Identity Center roles require assignment-oriented remediation.
+// WO-104@v3: Identity Center roles use the same missing-evidence coverage boundary.
 func TestRoleScanner_IdentityCenterReservedRole(t *testing.T) {
 	created := time.Now().UTC().AddDate(-2, 0, 0)
 	mock := &mockIAM{roles: []iamtypes.Role{{
@@ -329,9 +344,7 @@ func TestRoleScanner_IdentityCenterReservedRole(t *testing.T) {
 	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
 		t.Fatal("missing RoleLastUsed evidence must not emit UNUSED_ROLE")
 	}
-	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "AWSReservedSSO") {
-		t.Fatalf("errors = %#v, want role-qualified evidence error", result.Errors)
-	}
+	assertRoleUsageCoverage(t, result, 1, 0, 1)
 }
 
 // WO-46: malformed trust documents must be present in reportable scan errors.
@@ -409,6 +422,7 @@ func TestRoleScanner_WebIdentityUnusedRolePolicy(t *testing.T) {
 }
 
 // WO-54@v3: web-identity and ordinary roles share the same missing-evidence boundary.
+// WO-104@v3: both roles merge into one account-scoped observation.
 func TestRoleScanner_WebIdentityMissingUsageEvidence(t *testing.T) {
 	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}}`)
 	roles := []iamtypes.Role{
@@ -422,8 +436,32 @@ func TestRoleScanner_WebIdentityMissingUsageEvidence(t *testing.T) {
 	if findFinding(result.Findings, iam.FindingUnusedRole) != nil {
 		t.Fatal("missing usage evidence must not emit UNUSED_ROLE")
 	}
-	if len(result.Errors) != 2 || !strings.Contains(result.Errors[0], "unknown-irsa") || !strings.Contains(result.Errors[1], "unknown-ordinary") {
-		t.Fatalf("errors = %#v, want one role-qualified error per role", result.Errors)
+	assertRoleUsageCoverage(t, result, 2, 0, 2)
+}
+
+// WO-104@v3: excluded and default-suppressed roles cannot inflate coverage denominators.
+func TestRoleScanner_RoleUsageCoverageCountsEligibleRoles(t *testing.T) {
+	recent := time.Now().UTC().AddDate(0, 0, -1)
+	stale := time.Now().UTC().AddDate(0, 0, -120)
+	roles := []iamtypes.Role{
+		{RoleName: awssdk.String("unknown"), Arn: awssdk.String("arn:aws:iam::123456789012:role/unknown")},
+		{RoleName: awssdk.String("recent"), Arn: awssdk.String("arn:aws:iam::123456789012:role/recent"), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &recent}},
+		{RoleName: awssdk.String("stale"), Arn: awssdk.String("arn:aws:iam::123456789012:role/stale"), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale}},
+		{RoleName: awssdk.String("excluded"), Arn: awssdk.String("arn:aws:iam::123456789012:role/excluded")},
+		{
+			RoleName: awssdk.String("AWSServiceRoleForExample"),
+			Arn:      awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/AWSServiceRoleForExample"),
+			Path:     awssdk.String("/aws-service-role/example.amazonaws.com/"),
+		},
+	}
+	cfg := iam.ScanConfig{StaleDays: 90, Exclude: iam.ExcludeConfig{Principals: map[string]bool{"excluded": true}}}
+	result, err := NewRoleScanner(&mockIAM{roles: roles}, "123456789012").Scan(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	assertRoleUsageCoverage(t, result, 1, 2, 3)
+	if finding := findFinding(result.Findings, iam.FindingUnusedRole); finding == nil || finding.ResourceName != "stale" {
+		t.Fatalf("findings = %#v, want only stale role usage finding", result.Findings)
 	}
 }
 

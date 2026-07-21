@@ -21,6 +21,9 @@ const (
 	serviceLinkedRoleGuidance    = "Review the owning AWS service and remove the role through that service if appropriate"
 	identityCenterRoleGuidance   = "Review assignments and permission sets in IAM Identity Center instead of deleting this role directly"
 	customerManagedRoleGuidance  = "Delete the role if no longer needed"
+	roleLastUsedCapability       = "aws_role_last_used"   // WO-104@v3: stable coverage capability identity.
+	roleEvidenceUnavailable      = "evidence_unavailable" // WO-104@v3: stable causal identity for missing usage evidence.
+	awsAccountScopePrefix        = "aws-account:"         // WO-104@v3: bind gaps to the audited account.
 )
 
 // RoleScanner detects unused roles and cross-account trust issues.
@@ -40,6 +43,7 @@ func (s *RoleScanner) Type() iam.ResourceType {
 }
 
 // Scan examines all IAM roles for unused and cross-account trust issues.
+// WO-104@v3: aggregate unavailable usage evidence across eligible roles into one coverage observation.
 func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
 	roles, err := s.listRoles(ctx)
 	if err != nil {
@@ -49,6 +53,7 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	result := &iam.ScanResult{PrincipalsScanned: len(roles)}
 	now := time.Now().UTC()
 	threshold := iam.StaleThreshold(now, cfg.StaleDays) // WO-24@v2: use the shared calendar cutoff.
+	usageTotal, usageEvaluable, usageUnavailable := 0, 0, 0
 
 	for _, role := range roles {
 		roleName := awssdk.ToString(role.RoleName)
@@ -65,7 +70,9 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 
 		// WO-44@v2: suppress only UNUSED_ROLE; independent trust analysis always follows.
 		if includeUnused {
+			usageTotal++ // WO-104@v3: count only roles eligible for the UNUSED_ROLE decision.
 			if role.RoleLastUsed != nil && role.RoleLastUsed.LastUsedDate != nil {
+				usageEvaluable++
 				if role.RoleLastUsed.LastUsedDate.Before(threshold) {
 					daysSince := int(now.Sub(*role.RoleLastUsed.LastUsedDate).Hours() / 24)
 					message := fmt.Sprintf("Role not assumed in %d days", daysSince)
@@ -90,12 +97,25 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 			} else {
 				// WO-50: absent age evidence cannot justify a synthetic UNUSED_ROLE finding.
 				// WO-54@v3: CreateDate cannot substitute for missing trailing-window usage evidence.
-				result.Errors = append(result.Errors, fmt.Sprintf("evaluate unused role %s: RoleLastUsed evidence is unavailable", roleName))
+				usageUnavailable++ // WO-104@v3: aggregate known missing evidence outside the error plane.
 			}
 		}
 
 		// Check cross-account trust
 		s.checkCrossAccountTrust(role.AssumeRolePolicyDocument, roleARN, roleName, result)
+	}
+	if usageUnavailable > 0 {
+		// WO-104@v3: emit one account-scoped observation so reporter aggregation cannot flood errors.
+		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
+			Capability:     roleLastUsedCapability,
+			Cause:          roleEvidenceUnavailable,
+			Scope:          awsAccountScopePrefix + s.accountID,
+			FindingID:      iam.FindingUnusedRole,
+			AffectedCount:  usageUnavailable,
+			EvaluableCount: usageEvaluable,
+			TotalCount:     usageTotal,
+			MaxConsequence: iam.SeverityMedium,
+		})
 	}
 
 	return result, nil
