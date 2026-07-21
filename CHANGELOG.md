@@ -5,6 +5,15 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-07-21
+
+### Fixed
+
+- Azure user checks (MFA, guest, legacy-auth) now still run when sign-in activity is unavailable on non-premium tenants: base user fields are fetched independently and missing sign-in activity is reported as a coverage gap instead of failing the whole user scan
+- GCP: the local Google APIs Service Agent's expected Editor grant is no longer flagged as over-privileged (it is provider-managed and cannot be changed), while user-managed default accounts remain actionable; classification fails closed as a coverage gap if the project number cannot be resolved
+- Partial audits (some scanners failed, others succeeded) now report available evidence and then exit non-zero with a clear "scan incomplete" reason, so an incomplete audit no longer looks clean
+- Scanner results returned alongside an error are preserved rather than discarded, so one failing evidence source no longer erases findings from other sources
+
 ## [0.5.0] - 2026-07-21
 
 ### Added
