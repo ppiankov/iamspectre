@@ -329,7 +329,36 @@ func TestGraphClient_SuccessBodyOwnership(t *testing.T) {
 	}
 }
 
-// WO-84@v5: transport failures must preserve cause semantics without retaining request URLs.
+// WO-84@v8: request-construction failures must not retain URL-bearing parse wrappers.
+func TestGraphClient_RequestConstructionErrorOmitsRequestURL(t *testing.T) {
+	client := graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("transport called for invalid request URL")
+		return nil, nil
+	}))
+
+	_, err := client.doRequest(context.Background(), "https://graph.microsoft.com/v1.0/private-path-marker%zz?query-marker=value")
+	if err == nil {
+		t.Fatal("expected request-construction error")
+	}
+	if err.Error() != "create Graph request failed" {
+		t.Fatalf("request-construction error = %q", err)
+	}
+	var escapeErr neturl.EscapeError
+	if !errors.As(err, &escapeErr) {
+		t.Fatalf("request-construction cause not preserved: %v", err)
+	}
+	var urlErr *neturl.Error
+	if errors.As(err, &urlErr) {
+		t.Fatalf("request-construction error retained URL-bearing wrapper: %#v", urlErr)
+	}
+	for _, marker := range []string{"graph.microsoft.com", "private-path-marker", "query-marker", "%zz"} {
+		if strings.Contains(err.Error(), marker) {
+			t.Fatalf("request-construction error leaked %q: %q", marker, err)
+		}
+	}
+}
+
+// WO-84@v8: transport failures must preserve cause semantics without retaining request URLs.
 func TestGraphClient_TransportErrorOmitsRequestURL(t *testing.T) {
 	transportCause := errors.New("transport-cause-marker")
 	client := graphClientWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {

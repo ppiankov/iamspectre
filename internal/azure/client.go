@@ -20,6 +20,16 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 )
 
+// WO-84@v8: constrain pre-response diagnostics to closed request phases.
+type graphRequestPhase uint8
+
+// WO-84@v8: map every request phase to a fixed diagnostic message.
+const (
+	graphRequestPhaseUnknown graphRequestPhase = iota
+	graphRequestPhaseCreation
+	graphRequestPhaseTransport
+)
+
 const (
 	graphBaseURL = "https://graph.microsoft.com/v1.0"
 
@@ -27,8 +37,10 @@ const (
 	maxGraphErrorBodyBytes = 64 * 1024
 	// WO-84@v3: bound each stored field and the combined Graph-sourced diagnostic.
 	maxGraphErrorTextBytes = 4 * 1024
-	// WO-84@v5: transport diagnostics never interpolate URL-bearing or arbitrary cause text.
-	graphTransportErrorMessage = "execute Graph request failed"
+	// WO-84@v8: pre-response diagnostics use fixed phase messages without request data.
+	graphRequestErrorMessage          = "Graph request failed"
+	graphRequestCreationErrorMessage  = "create Graph request failed"
+	graphRequestTransportErrorMessage = "execute Graph request failed"
 )
 
 // WO-84@v3: redact bearer credentials before retaining any Graph-sourced text.
@@ -67,30 +79,37 @@ type GraphHTTPError struct {
 	ClientRequestID string
 }
 
-// WO-84@v5: graphTransportError preserves cause matching behind a fixed safe message.
-type graphTransportError struct {
+// WO-84@v8: graphRequestError preserves cause matching behind a closed request phase.
+type graphRequestError struct {
+	phase graphRequestPhase
 	cause error
 }
 
-// WO-84@v5: Error cannot render the request URL carried by net/url.Error.
-func (*graphTransportError) Error() string {
-	return graphTransportErrorMessage
+// WO-84@v8: Error cannot render request data because phases map only to constants.
+func (e *graphRequestError) Error() string {
+	if e == nil || e.phase == graphRequestPhaseUnknown {
+		return graphRequestErrorMessage
+	}
+	if e.phase == graphRequestPhaseCreation {
+		return graphRequestCreationErrorMessage
+	}
+	return graphRequestTransportErrorMessage
 }
 
-// WO-84@v5: Unwrap retains transport classification without the URL-bearing wrapper.
-func (e *graphTransportError) Unwrap() error {
+// WO-84@v8: Unwrap retains cause classification without the URL-bearing wrapper.
+func (e *graphRequestError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
 	return e.cause
 }
 
-// WO-84@v5: retain only the underlying transport cause returned by http.Client.Do.
-func newGraphTransportError(err error) error {
+// WO-84@v8: retain only the underlying cause from a URL-bearing request error.
+func newGraphRequestError(phase graphRequestPhase, err error) error {
 	if urlErr, ok := err.(*neturl.Error); ok {
-		return &graphTransportError{cause: urlErr.Err}
+		return &graphRequestError{phase: phase, cause: urlErr.Err}
 	}
-	return &graphTransportError{cause: err}
+	return &graphRequestError{phase: phase, cause: err}
 }
 
 // WO-84@v3: Error omits URLs, bodies, headers, and credentials from operator output.
@@ -269,7 +288,7 @@ func (g *graphClient) GetSecurityDefaults(ctx context.Context) (*SecurityDefault
 }
 
 // doRequest performs an authenticated GET request to Microsoft Graph.
-// WO-84@v5: sanitize both response and transport failures without exposing request URLs.
+// WO-84@v8: sanitize response and pre-response failures without exposing request URLs.
 func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser, error) {
 	const maxRetries = 3
 
@@ -283,14 +302,14 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+			return nil, newGraphRequestError(graphRequestPhaseCreation, err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token.Token)
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := g.client.Do(req)
 		if err != nil {
-			return nil, newGraphTransportError(err)
+			return nil, newGraphRequestError(graphRequestPhaseTransport, err)
 		}
 
 		if resp.StatusCode == http.StatusOK {
