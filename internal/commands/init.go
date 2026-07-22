@@ -12,6 +12,9 @@ var initFlags struct {
 	force bool
 }
 
+// WO-85@v2: keep generated next steps usable outside a source checkout.
+const azureSetupDocsURL = "https://github.com/ppiankov/iamspectre/blob/main/docs/cli-reference.md#azure-authentication"
+
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Generate sample config and IAM policies",
@@ -50,7 +53,7 @@ func runInit(_ *cobra.Command, _ []string) error {
 		fmt.Println("\nNext steps:")
 		fmt.Println("  1. Edit .iamspectre.yaml to customize audit settings")
 		fmt.Println("  2. AWS: Apply iamspectre-aws-policy.json to your IAM role/user")
-		fmt.Println("  3. Azure: Register an app with iamspectre-azure-permissions.json")
+		fmt.Printf("  3. Azure: Choose delegated or app-only setup: %s\n", azureSetupDocsURL) // WO-85@v2: distinguish credentials from app grants.
 		fmt.Println("  4. Run: iamspectre aws | iamspectre gcp | iamspectre azure")
 	}
 	return nil
@@ -109,20 +112,20 @@ include_service_linked_roles: false
 #     - "i-0abc123def456"
 `
 
-const sampleAzureGraphPermissions = `{
-  "requiredResourceAccess": [
-    {
-      "resourceAppId": "00000003-0000-0000-c000-000000000000",
-      "resourceAccess": [
-        { "id": "df021288-bdef-4463-88db-98f22de89214", "type": "Role" },
-        { "id": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30", "type": "Role" },
-        { "id": "b0afded3-3588-46d8-8b3d-9842eff778da", "type": "Role" },
-        { "id": "7ab1d382-f21e-4acd-a863-ba3e13f7da61", "type": "Role" },
-        { "id": "38d9df27-64da-44fd-b7c5-a6fbac20248f", "type": "Role" }
-      ]
-    }
-  ]
-}
+// WO-85@v2: Azure CLI consumes the required-resource-access array directly.
+const sampleAzureGraphPermissions = `[
+  {
+    "resourceAppId": "00000003-0000-0000-c000-000000000000",
+    "resourceAccess": [
+      { "id": "df021288-bdef-4463-88db-98f22de89214", "type": "Role" },
+      { "id": "9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30", "type": "Role" },
+      { "id": "b0afded3-3588-46d8-8b3d-9842eff778da", "type": "Role" },
+      { "id": "483bed4a-2ad3-4361-a73b-c83ccdbdc53c", "type": "Role" },
+      { "id": "38d9df27-64da-44fd-b7c5-a6fbac20248f", "type": "Role" },
+      { "id": "246dd0d5-5bd0-4def-940b-0421030a5b68", "type": "Role" }
+    ]
+  }
+]
 `
 
 const sampleAWSIAMPolicy = `{
