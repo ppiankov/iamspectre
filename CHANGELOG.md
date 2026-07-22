@@ -5,6 +5,19 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-07-22
+
+### Added
+
+- `iamspectre aws --region` flag to set the SDK region explicitly (precedence: flag, then config, then the SDK default chain)
+
+### Fixed
+
+- AWS scans no longer fail with a cryptic "Missing Region" error when no region is configured; the error is now actionable and names how to set one
+- README documented a nonexistent `scan --provider` command; corrected to the real per-cloud commands (`aws`, `gcp`, `azure`), with a test that keeps the docs aligned with the registered commands
+- Azure setup documentation now lists the exact Microsoft Graph permissions and directory roles required, and correctly separates the Entra ID P1/P2 license requirement (for sign-in activity) from the permission-scope requirement (for MFA and other reads)
+- Azure MFA and security-defaults checks report a Graph 403 (missing permission or license) as a bounded coverage gap instead of one error per user, so an under-permissioned scan is reported as incomplete rather than flooded with errors
+
 ## [0.5.1] - 2026-07-21
 
 ### Fixed
