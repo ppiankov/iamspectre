@@ -94,6 +94,11 @@ func TestScanResult_JSON(t *testing.T) {
 		CoverageGaps: []CoverageGapObservation{{
 			Capability: "activity", Scope: "account:a", FindingID: FindingUnusedRole, AffectedCount: 1,
 		}},
+		// WO-110@v5: private role-level coverage evidence must never enter ScanResult JSON.
+		CoverageGapDetails: []CoverageGapDetail{{
+			Capability: "activity", Cause: "evidence_unavailable", ResourceType: ResourceIAMRole,
+			ResourceID: "arn:aws:iam::123456789012:role/private-role", ResourceName: "private-role",
+		}},
 		PrincipalsScanned: 25,
 	}
 
@@ -115,6 +120,9 @@ func TestScanResult_JSON(t *testing.T) {
 	}
 	if len(decoded.CoverageGaps) != 1 || decoded.CoverageGaps[0].Capability != "activity" {
 		t.Fatalf("coverage gaps = %#v", decoded.CoverageGaps)
+	}
+	if len(decoded.CoverageGapDetails) != 0 || contains(string(data), "private-role") {
+		t.Fatalf("private coverage detail escaped ScanResult JSON: %s", data)
 	}
 }
 

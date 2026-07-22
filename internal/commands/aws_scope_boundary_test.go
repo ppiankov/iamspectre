@@ -8,9 +8,10 @@ import (
 )
 
 // WO-22@v3: enumerate the exact actions emitted by the initialization template.
+// WO-113@v3: include the read-only role enrichment prerequisite.
 var expectedInitAWSActions = []string{
 	"iam:GenerateCredentialReport", "iam:GetCredentialReport", "iam:GetPolicy",
-	"iam:GetPolicyVersion", "iam:ListAttachedRolePolicies", "iam:ListAttachedUserPolicies",
+	"iam:GetPolicyVersion", "iam:GetRole", "iam:ListAttachedRolePolicies", "iam:ListAttachedUserPolicies",
 	"iam:ListPolicies", "iam:ListRoles", "iam:ListUsers", "sts:GetCallerIdentity",
 }
 
@@ -26,6 +27,7 @@ var awsPolicyActionEvidence = map[string]awsActionEvidence{
 	"iam:GetCredentialReport":      {productionSite: "internal/aws/credential_report.go:64 FetchCredentialReport", decision: "direct"},
 	"iam:GetPolicy":                {decision: "unjustified"},
 	"iam:GetPolicyVersion":         {productionSite: "internal/aws/policy.go:75 PolicyScanner.checkWildcardPolicy", decision: "direct"},
+	"iam:GetRole":                  {productionSite: "internal/aws/role.go RoleScanner.resolveRoleLastUsed", decision: "direct"}, // WO-113@v3: generated credentials must cover runtime role enrichment.
 	"iam:ListAttachedRolePolicies": {decision: "unjustified"},
 	"iam:ListAttachedUserPolicies": {decision: "unjustified"},
 	"iam:ListPolicies":             {productionSite: "internal/aws/policy.go:126 PolicyScanner.listPolicies", decision: "direct"},
@@ -71,6 +73,7 @@ func TestInitAWSActionEvidence(t *testing.T) {
 		"iam:GenerateCredentialReport": "internal/aws/credential_report.go:48 FetchCredentialReport",
 		"iam:GetCredentialReport":      "internal/aws/credential_report.go:64 FetchCredentialReport",
 		"iam:GetPolicyVersion":         "internal/aws/policy.go:75 PolicyScanner.checkWildcardPolicy",
+		"iam:GetRole":                  "internal/aws/role.go RoleScanner.resolveRoleLastUsed",
 		"iam:ListPolicies":             "internal/aws/policy.go:126 PolicyScanner.listPolicies",
 		"iam:ListRoles":                "internal/aws/role.go:179 RoleScanner.listRoles",
 		"sts:GetCallerIdentity":        "internal/aws/client.go:63 Client.GetAccountID",

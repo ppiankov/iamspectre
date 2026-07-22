@@ -2,6 +2,7 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -21,9 +22,13 @@ const (
 	serviceLinkedRoleGuidance    = "Review the owning AWS service and remove the role through that service if appropriate"
 	identityCenterRoleGuidance   = "Review assignments and permission sets in IAM Identity Center instead of deleting this role directly"
 	customerManagedRoleGuidance  = "Delete the role if no longer needed"
-	roleLastUsedCapability       = "aws_role_last_used"   // WO-104@v3: stable coverage capability identity.
-	roleEvidenceUnavailable      = "evidence_unavailable" // WO-104@v3: stable causal identity for missing usage evidence.
-	awsAccountScopePrefix        = "aws-account:"         // WO-104@v3: bind gaps to the audited account.
+	roleLastUsedCapability       = "aws_role_last_used"     // WO-104@v3: stable coverage capability identity.
+	roleEvidenceUnavailable      = "evidence_unavailable"   // WO-104@v3: stable causal identity for missing usage evidence.
+	roleGetRoleDenied            = "getrole_denied"         // WO-110@v5: distinguish authorization gaps without retaining provider errors.
+	roleGetRoleThrottled         = "getrole_throttled"      // WO-110@v5: expose retryable provider coverage loss.
+	roleGetRoleFailed            = "getrole_failed"         // WO-110@v5: bound every other non-context failure to a stable cause.
+	awsAccountScopePrefix        = "aws-account:"           // WO-104@v3: bind gaps to the audited account.
+	podIdentityServicePrincipal  = "pods.eks.amazonaws.com" // WO-109@v2: canonical EKS Pod Identity trust principal.
 )
 
 // RoleScanner detects unused roles and cross-account trust issues.
@@ -66,13 +71,14 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 
 		serviceLinked := isServiceLinkedRole(role)
 		webIdentity := classifyWebIdentityTrust(role.AssumeRolePolicyDocument) // WO-54@v3: annotate determinate trust without changing the finding decision.
+		podIdentity := classifyPodIdentityTrust(role.AssumeRolePolicyDocument) // WO-109@v2: preserve the structurally distinct Pod Identity mechanism.
 		includeUnused := !serviceLinked || cfg.IncludeServiceLinkedRoles
 		severity, recommendation := unusedRolePresentation(role, serviceLinked)
 
 		// WO-44@v2: suppress only UNUSED_ROLE; independent trust analysis always follows.
 		if includeUnused {
 			usageTotal++ // WO-104@v3: count only roles eligible for the UNUSED_ROLE decision.
-			roleLastUsed, err := s.resolveRoleLastUsed(ctx, role)
+			roleLastUsed, unavailableCause, err := s.resolveRoleLastUsed(ctx, role)
 			if err != nil {
 				return nil, err
 			}
@@ -85,7 +91,9 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 						"last_used":      roleLastUsed.LastUsedDate.Format(time.RFC3339),
 						"days_since_use": daysSince,
 					}
-					if webIdentity {
+					if podIdentity {
+						metadata["trust_mechanism"] = "pod_identity" // WO-109@v2: singular metadata uses deterministic Pod Identity precedence.
+					} else if webIdentity {
 						metadata["trust_mechanism"] = "web_identity" // WO-54@v3: annotation does not alter severity or guidance.
 					}
 					result.Findings = append(result.Findings, iam.Finding{
@@ -102,7 +110,16 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 			} else {
 				// WO-50: absent age evidence cannot justify a synthetic UNUSED_ROLE finding.
 				// WO-54@v3: CreateDate cannot substitute for missing trailing-window usage evidence.
-				usageUnavailable++ // WO-104@v3: aggregate known missing evidence outside the error plane.
+				// WO-110@v5: retain bounded role-level cause and identity only for opt-in/in-process use.
+				usageUnavailable++ // WO-104@v3: preserve the single bounded aggregate and its denominator.
+				result.CoverageGapDetails = append(result.CoverageGapDetails, iam.CoverageGapDetail{
+					Capability:   roleLastUsedCapability,
+					Cause:        unavailableCause,
+					ResourceType: iam.ResourceIAMRole,
+					ResourceID:   roleARN,
+					ResourceName: roleName,
+				})
+				slog.Debug("role_last_used_coverage_detail", "role", roleName, "cause", unavailableCause)
 			}
 		}
 
@@ -111,6 +128,7 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	}
 	if usageUnavailable > 0 {
 		// WO-104@v3: emit one account-scoped observation so reporter aggregation cannot flood errors.
+		// WO-110@v5: specific causes stay in private detail so the aggregate denominator cannot be counted twice.
 		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
 			Capability:     roleLastUsedCapability,
 			Cause:          roleEvidenceUnavailable,
@@ -127,29 +145,54 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 }
 
 // WO-107@v2: ListRoles omits usage evidence, so recover only that field through one bounded request.
-func (s *RoleScanner) resolveRoleLastUsed(ctx context.Context, role iamtypes.Role) (*iamtypes.RoleLastUsed, error) {
+// WO-110@v5: return a stable private cause for every non-fatal unresolved enrichment.
+func (s *RoleScanner) resolveRoleLastUsed(ctx context.Context, role iamtypes.Role) (*iamtypes.RoleLastUsed, string, error) {
 	if role.RoleLastUsed != nil && role.RoleLastUsed.LastUsedDate != nil {
-		return role.RoleLastUsed, nil
+		return role.RoleLastUsed, "", nil
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	roleName := awssdk.ToString(role.RoleName)
 	if roleName == "" {
-		return nil, nil
+		return nil, roleEvidenceUnavailable, nil
 	}
 
 	out, err := s.client.GetRole(ctx, &iamsvc.GetRoleInput{RoleName: awssdk.String(roleName)})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+			return nil, "", ctxErr
 		}
-		return nil, nil
+		return nil, classifyGetRoleFailure(err), nil
 	}
 	if out == nil || out.Role == nil {
-		return nil, nil
+		return nil, roleEvidenceUnavailable, nil
 	}
-	return out.Role.RoleLastUsed, nil
+	if out.Role.RoleLastUsed == nil || out.Role.RoleLastUsed.LastUsedDate == nil {
+		return nil, roleEvidenceUnavailable, nil
+	}
+	return out.Role.RoleLastUsed, "", nil
+}
+
+// WO-110@v5: awsAPIErrorCoder exposes only the stable provider code needed for safe classification.
+type awsAPIErrorCoder interface {
+	ErrorCode() string
+}
+
+// WO-110@v5: classify only stable provider codes; raw messages stay outside customer output.
+func classifyGetRoleFailure(err error) string {
+	var apiErr awsAPIErrorCoder
+	if !errors.As(err, &apiErr) {
+		return roleGetRoleFailed
+	}
+	switch strings.ToLower(apiErr.ErrorCode()) {
+	case "accessdenied", "accessdeniedexception", "unauthorizedaccess", "unauthorizedoperation":
+		return roleGetRoleDenied
+	case "throttling", "throttlingexception", "toomanyrequestsexception", "requestlimitexceeded":
+		return roleGetRoleThrottled
+	default:
+		return roleGetRoleFailed
+	}
 }
 
 // WO-54@v3: classify only determinate OIDC trust grants for metadata annotation.
@@ -184,6 +227,39 @@ func classifyWebIdentityTrust(policyDoc *string) bool {
 		}
 	}
 	return false
+}
+
+// WO-109@v2: classify only complete, determinate EKS Pod Identity trust grants.
+func classifyPodIdentityTrust(policyDoc *string) bool {
+	if policyDoc == nil {
+		return false
+	}
+	doc, err := ParsePolicyDocument(*policyDoc)
+	if err != nil {
+		return false
+	}
+	grantsAssumeRole, grantsTagSession := false, false
+	for _, statement := range doc.Statement {
+		if statement.Effect != "Allow" || statement.Principal == nil ||
+			statement.AssessActions().State != ActionAssessmentDeterminate {
+			continue
+		}
+		podIdentityPrincipal := false
+		for _, principal := range statement.Principal.Service {
+			if strings.EqualFold(principal, podIdentityServicePrincipal) {
+				podIdentityPrincipal = true
+				break
+			}
+		}
+		if !podIdentityPrincipal {
+			continue
+		}
+		for _, action := range statement.Action {
+			grantsAssumeRole = grantsAssumeRole || matchesActionPattern(action, "sts:AssumeRole")
+			grantsTagSession = grantsTagSession || matchesActionPattern(action, "sts:TagSession")
+		}
+	}
+	return grantsAssumeRole && grantsTagSession
 }
 
 // WO-44@v2: recognize only structural service-linked path, ARN, or canonical name shapes.
