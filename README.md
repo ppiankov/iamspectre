@@ -34,10 +34,11 @@ brew install iamspectre
 Download the latest Windows `.zip` from [GitHub Releases](https://github.com/ppiankov/iamspectre/releases), extract `iamspectre.exe`, and add its folder to `PATH` or run it in place.
 
 ```powershell
-.\iamspectre.exe scan --provider aws --format json
+.\iamspectre.exe aws --format json
 ```
 
-AWS and Azure credentials resolve through the official SDK default credential chains from standard Windows locations (`%USERPROFILE%\.aws\` and `az login`), so no extra configuration is needed.
+<!-- WO-85@v2: Azure requires explicit Graph authorization beyond credential discovery. -->
+AWS credentials resolve through the SDK default chain from standard Windows locations such as `%USERPROFILE%\.aws\`. Azure also uses its default credential chain, but Microsoft Graph permissions, admin consent, directory roles, and some licensing requirements must be configured explicitly; follow the [Azure authentication setup](docs/cli-reference.md#azure-authentication).
 
 ### From source
 
@@ -50,14 +51,17 @@ make build
 ### Usage
 
 ```sh
-iamspectre scan --provider aws --format json
+iamspectre aws --format json
 ```
 
 ## CLI commands
 
+<!-- WO-6@v2: list only commands registered by the Cobra root. -->
 | Command | Description |
 |---------|-------------|
-| `iamspectre scan` | Scan IAM resources across cloud providers |
+| `iamspectre aws` | Audit AWS IAM resources |
+| `iamspectre gcp` | Audit GCP IAM resources |
+| `iamspectre azure` | Audit Microsoft Entra ID resources |
 | `iamspectre init` | Generate config file and IAM permissions |
 | `iamspectre version` | Print version |
 
