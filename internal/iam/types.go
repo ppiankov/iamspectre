@@ -170,18 +170,165 @@ type ScanResult struct {
 	Errors                              []string                 `json:"errors,omitempty"`
 	CoverageGaps                        []CoverageGapObservation `json:"coverage_gaps,omitempty"` // WO-70@v4: keep missing evidence separate from actionable findings.
 	CoverageGapDetails                  []CoverageGapDetail      `json:"-"`                       // WO-110@v5: retain opt-in role detail only inside the scan pipeline.
+	IAMPositiveEdges                    []IAMPositiveEdge        `json:"-"`                       // WO-119@v2: retain observed IAM edges only inside the scan pipeline.
 	PrincipalsScanned                   int                      `json:"principals_scanned"`
 	ObservedPrincipalIDs                map[string]struct{}      `json:"-"` // WO-89@v4: carry identities only far enough to compute cross-scanner cardinality.
 	PrincipalIdentityAccountingComplete bool                     `json:"-"` // WO-89@v4: distinguish a complete empty set from unsupported accounting.
 }
 
+// WO-119@v2: IAMPositiveEdgeType names the closed IAM-side positive evidence vocabulary.
+type IAMPositiveEdgeType string
+
+// WO-119@v2: enumerate only the three killgate-ratified positive observation kinds.
+const (
+	IAMTrustWebIdentityObserved IAMPositiveEdgeType = "IAM_TRUST_WEB_IDENTITY_OBSERVED"
+	IAMTrustPodIdentityObserved IAMPositiveEdgeType = "IAM_TRUST_POD_IDENTITY_OBSERVED"
+	RoleActivityObserved        IAMPositiveEdgeType = "ROLE_ACTIVITY_OBSERVED"
+)
+
+// WO-119@v2: IAMPositiveEdge is sealed so provider packages cannot invent absence or verdict variants.
+type IAMPositiveEdge interface {
+	Type() IAMPositiveEdgeType
+	RoleARN() string
+	RoleName() string
+	ObservedAt() time.Time
+	positiveIAMObservation()
+}
+
+// WO-119@v2: IAMTrustSubjectCondition preserves a subject constraint without interpreting its identity grammar.
+type IAMTrustSubjectCondition struct {
+	Operator string `json:"-"` // WO-123: private evidence must remain non-serializable even outside ScanResult.
+	Key      string `json:"-"` // WO-123: condition keys can contain customer identity.
+	RawValue string `json:"-"` // WO-123: raw subject values can contain namespace and service-account identity.
+}
+
+// WO-119@v2: iamPositiveEdgeBase holds the evidence required by every positive IAM edge.
+type iamPositiveEdgeBase struct {
+	roleARN    string    // WO-119@v2: bind evidence to one concrete role ARN.
+	roleName   string    // WO-119@v2: retain the provider display name for opt-in consumers.
+	observedAt time.Time // WO-119@v2: bind evidence to one non-zero collection instant.
+}
+
+// WO-119@v2: expose the validated role identity without exposing mutable storage.
+func (e iamPositiveEdgeBase) RoleARN() string { return e.roleARN }
+
+// WO-119@v2: expose the validated display name without exposing mutable storage.
+func (e iamPositiveEdgeBase) RoleName() string { return e.roleName }
+
+// WO-119@v2: expose the validated collection instant without exposing mutable storage.
+func (e iamPositiveEdgeBase) ObservedAt() time.Time { return e.observedAt }
+
+// WO-119@v2: iamTrustWebIdentityObservedEdge can only be created through its validating constructor.
+type iamTrustWebIdentityObservedEdge struct {
+	iamPositiveEdgeBase                            // WO-119@v2: require common role and collection evidence.
+	oidcIssuer          string                     // WO-119@v2: require one raw non-empty OIDC provider resource.
+	subjectConditions   []IAMTrustSubjectCondition // WO-119@v2: preserve optional issuer-scoped subject constraints.
+}
+
+// WO-119@v2: NewIAMTrustWebIdentityObservedEdge returns nil unless the positive trust evidence is complete.
+func NewIAMTrustWebIdentityObservedEdge(
+	roleARN, roleName, oidcIssuer string,
+	subjectConditions []IAMTrustSubjectCondition,
+	observedAt time.Time,
+) IAMPositiveEdge {
+	if roleARN == "" || oidcIssuer == "" || observedAt.IsZero() {
+		return nil
+	}
+	return iamTrustWebIdentityObservedEdge{
+		iamPositiveEdgeBase: iamPositiveEdgeBase{roleARN: roleARN, roleName: roleName, observedAt: observedAt},
+		oidcIssuer:          oidcIssuer,
+		subjectConditions:   append([]IAMTrustSubjectCondition(nil), subjectConditions...),
+	}
+}
+
+// WO-119@v2: identify only constructor-validated web-identity evidence.
+func (iamTrustWebIdentityObservedEdge) Type() IAMPositiveEdgeType {
+	return IAMTrustWebIdentityObserved
+}
+
+// WO-119@v2: keep the positive-edge vocabulary closed outside this package.
+func (iamTrustWebIdentityObservedEdge) positiveIAMObservation() {}
+
+// WO-119@v2: IAMTrustWebIdentityEvidence exposes the raw evidence only for a validated web-identity edge.
+func IAMTrustWebIdentityEvidence(edge IAMPositiveEdge) (string, []IAMTrustSubjectCondition, bool) {
+	typed, ok := edge.(iamTrustWebIdentityObservedEdge)
+	if !ok {
+		return "", nil, false
+	}
+	return typed.oidcIssuer, append([]IAMTrustSubjectCondition(nil), typed.subjectConditions...), true
+}
+
+// WO-119@v2: iamTrustPodIdentityObservedEdge can only be created through its validating constructor.
+type iamTrustPodIdentityObservedEdge struct {
+	iamPositiveEdgeBase // WO-119@v2: require common role and collection evidence.
+}
+
+// WO-119@v2: NewIAMTrustPodIdentityObservedEdge returns nil unless the positive trust evidence is complete.
+func NewIAMTrustPodIdentityObservedEdge(roleARN, roleName string, observedAt time.Time) IAMPositiveEdge {
+	if roleARN == "" || observedAt.IsZero() {
+		return nil
+	}
+	return iamTrustPodIdentityObservedEdge{
+		iamPositiveEdgeBase: iamPositiveEdgeBase{roleARN: roleARN, roleName: roleName, observedAt: observedAt},
+	}
+}
+
+// WO-119@v2: identify only constructor-validated Pod Identity evidence.
+func (iamTrustPodIdentityObservedEdge) Type() IAMPositiveEdgeType {
+	return IAMTrustPodIdentityObserved
+}
+
+// WO-119@v2: keep the positive-edge vocabulary closed outside this package.
+func (iamTrustPodIdentityObservedEdge) positiveIAMObservation() {}
+
+// WO-119@v2: roleActivityObservedEdge can only be created with populated RoleLastUsed evidence.
+type roleActivityObservedEdge struct {
+	iamPositiveEdgeBase           // WO-119@v2: require common role and collection evidence.
+	lastUsedAt          time.Time // WO-119@v2: make absence impossible by storing a validated value.
+	lastUsedRegion      string    // WO-119@v2: preserve the optional AWS activity region.
+}
+
+// WO-119@v2: NewRoleActivityObservedEdge returns nil unless populated RoleLastUsed evidence exists.
+func NewRoleActivityObservedEdge(
+	roleARN, roleName string,
+	lastUsedAt time.Time,
+	lastUsedRegion string,
+	observedAt time.Time,
+) IAMPositiveEdge {
+	if roleARN == "" || lastUsedAt.IsZero() || observedAt.IsZero() {
+		return nil
+	}
+	return roleActivityObservedEdge{
+		iamPositiveEdgeBase: iamPositiveEdgeBase{roleARN: roleARN, roleName: roleName, observedAt: observedAt},
+		lastUsedAt:          lastUsedAt,
+		lastUsedRegion:      lastUsedRegion,
+	}
+}
+
+// WO-119@v2: identify only constructor-validated activity evidence.
+func (roleActivityObservedEdge) Type() IAMPositiveEdgeType {
+	return RoleActivityObserved
+}
+
+// WO-119@v2: keep the positive-edge vocabulary closed outside this package.
+func (roleActivityObservedEdge) positiveIAMObservation() {}
+
+// WO-119@v2: RoleActivityEvidence exposes usage only for a validated role-activity edge.
+func RoleActivityEvidence(edge IAMPositiveEdge) (time.Time, string, bool) {
+	typed, ok := edge.(roleActivityObservedEdge)
+	if !ok {
+		return time.Time{}, "", false
+	}
+	return typed.lastUsedAt, typed.lastUsedRegion, true
+}
+
 // WO-110@v5: CoverageGapDetail carries private resource identity for opt-in diagnostics and dependent enrichment.
 type CoverageGapDetail struct {
-	Capability   string       // WO-110@v5: identify the unavailable evidence capability.
-	Cause        string       // WO-110@v5: retain the role-specific bounded failure cause.
-	ResourceType ResourceType // WO-110@v5: keep dependent enrichment type-safe.
-	ResourceID   string       // WO-110@v5: carry the role ARN only inside the scan pipeline.
-	ResourceName string       // WO-110@v5: carry the role name only for opt-in diagnostics.
+	Capability   string       `json:"-"` // WO-123: identify the unavailable evidence capability only in memory.
+	Cause        string       `json:"-"` // WO-123: retain the bounded cause without a direct JSON path.
+	ResourceType ResourceType `json:"-"` // WO-123: keep dependent enrichment type-safe and private.
+	ResourceID   string       `json:"-"` // WO-123: carry the role ARN only inside the scan pipeline.
+	ResourceName string       `json:"-"` // WO-123: carry the role name only for opt-in diagnostics.
 }
 
 // WO-70@v4: CoverageGapObservation records one unevaluable check without fabricating a finding.

@@ -3,10 +3,12 @@ package aws
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -434,6 +436,212 @@ func TestClassifyPodIdentityTrust(t *testing.T) {
 				t.Fatalf("classifyPodIdentityTrust() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// WO-119@v2: mixed IAM facts must coexist without collapsing into a tier or verdict.
+func TestRoleScanner_EmitsCoexistingPositiveEdges(t *testing.T) {
+	fixedNow := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	lastUsed := fixedNow.Add(-24 * time.Hour)
+	region := "us-east-1"
+	webA := `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer-a.example/path"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"issuer-a.example/path:sub":"system:serviceaccount:alpha:reader","issuer-a.example/path:aud":"sts.amazonaws.com"}}}`
+	webB := `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer-b.example"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringLike":{"issuer-b.example:sub":["system:serviceaccount:beta:*"]}}}`
+	pod := `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}`
+	trust := url.QueryEscape(`{"Statement":[` + webB + `,` + pod + `,` + webA + `]}`)
+	role := iamtypes.Role{
+		RoleName:                 awssdk.String("mixed-role"),
+		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/mixed-role"),
+		RoleLastUsed:             &iamtypes.RoleLastUsed{LastUsedDate: &lastUsed, Region: &region},
+		AssumeRolePolicyDocument: &trust,
+	}
+	scanner := NewRoleScanner(&mockIAM{roles: []iamtypes.Role{role}}, "123456789012")
+	scanner.now = func() time.Time { return fixedNow }
+
+	result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.IAMPositiveEdges) != 4 {
+		t.Fatalf("positive edges = %#v, want two web, pod, and activity", result.IAMPositiveEdges)
+	}
+	issuerA, conditionsA, ok := iam.IAMTrustWebIdentityEvidence(result.IAMPositiveEdges[0])
+	if !ok || issuerA != "issuer-a.example/path" || len(conditionsA) != 1 {
+		t.Fatalf("web edge A = %#v", result.IAMPositiveEdges[0])
+	}
+	if got := conditionsA[0]; got.Operator != "StringEquals" ||
+		got.Key != "issuer-a.example/path:sub" || got.RawValue != `"system:serviceaccount:alpha:reader"` {
+		t.Fatalf("subject condition A = %#v", got)
+	}
+	issuerB, conditionsB, ok := iam.IAMTrustWebIdentityEvidence(result.IAMPositiveEdges[1])
+	if !ok || issuerB != "issuer-b.example" || len(conditionsB) != 1 ||
+		conditionsB[0].RawValue != `["system:serviceaccount:beta:*"]` {
+		t.Fatalf("web edge B = %#v", result.IAMPositiveEdges[1])
+	}
+	if result.IAMPositiveEdges[2].Type() != iam.IAMTrustPodIdentityObserved {
+		t.Fatalf("edge[2] = %#v, want Pod Identity trust", result.IAMPositiveEdges[2])
+	}
+	activityAt, activityRegion, ok := iam.RoleActivityEvidence(result.IAMPositiveEdges[3])
+	if !ok || !activityAt.Equal(lastUsed) || activityRegion != region {
+		t.Fatalf("activity edge = %#v", result.IAMPositiveEdges[3])
+	}
+	for i, edge := range result.IAMPositiveEdges {
+		if !edge.ObservedAt().Equal(fixedNow) {
+			t.Fatalf("edge[%d] observed_at = %s, want %s", i, edge.ObservedAt(), fixedNow)
+		}
+	}
+}
+
+// WO-119@v2: missing usage evidence may coexist with positive trust but can never create an activity or negative edge.
+// WO-123: private evidence types must fail closed even when marshaled outside ScanResult.
+func TestRoleScanner_PositiveEdgeAbsenceAndJSONPrivacy(t *testing.T) {
+	fixedNow := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"issuer.example:sub":"system:serviceaccount:private:reader"}}}}`)
+	role := iamtypes.Role{
+		RoleName:                 awssdk.String("private-role"),
+		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/private-role"),
+		AssumeRolePolicyDocument: &trust,
+	}
+	mock := &mockIAM{
+		roles: []iamtypes.Role{role},
+		getRoleFn: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+			return nil, codedAPIError{code: "AccessDenied"}
+		},
+	}
+	scanner := NewRoleScanner(mock, "123456789012")
+	scanner.now = func() time.Time { return fixedNow }
+	result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.IAMPositiveEdges) != 1 || result.IAMPositiveEdges[0].Type() != iam.IAMTrustWebIdentityObserved {
+		t.Fatalf("positive edges = %#v, want trust only", result.IAMPositiveEdges)
+	}
+	assertRoleUsageCoverage(t, result, 1, 0, 1)
+
+	directValues := []any{
+		result.IAMPositiveEdges[0],
+		iam.NewIAMTrustPodIdentityObservedEdge("secret", "secret", fixedNow),
+		iam.NewRoleActivityObservedEdge("secret", "secret", fixedNow, "secret", fixedNow),
+		iam.CoverageGapDetail{Capability: "secret", Cause: "secret", ResourceType: iam.ResourceIAMRole, ResourceID: "secret", ResourceName: "secret"},
+	}
+	for _, value := range directValues {
+		encoded, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatalf("marshal %T: %v", value, marshalErr)
+		}
+		if string(encoded) != "{}" {
+			t.Fatalf("marshal %T = %s, want private empty object", value, encoded)
+		}
+	}
+	// WO-119@v2: callers cannot represent a positive edge without its minimum evidence.
+	invalidEdges := []iam.IAMPositiveEdge{
+		iam.NewIAMTrustWebIdentityObservedEdge("", "role", "issuer.example", nil, fixedNow),
+		iam.NewIAMTrustWebIdentityObservedEdge("arn:aws:iam::123456789012:role/private-role", "role", "", nil, fixedNow),
+		iam.NewIAMTrustWebIdentityObservedEdge("arn:aws:iam::123456789012:role/private-role", "role", "issuer.example", nil, time.Time{}),
+		iam.NewIAMTrustPodIdentityObservedEdge("", "role", fixedNow),
+		iam.NewIAMTrustPodIdentityObservedEdge("arn:aws:iam::123456789012:role/private-role", "role", time.Time{}),
+		iam.NewRoleActivityObservedEdge("arn:aws:iam::123456789012:role/private-role", "role", time.Time{}, "", fixedNow),
+		iam.NewRoleActivityObservedEdge("arn:aws:iam::123456789012:role/private-role", "role", fixedNow, "", time.Time{}),
+	}
+	for i, edge := range invalidEdges {
+		if edge != nil {
+			t.Fatalf("invalid edge[%d] = %#v, want nil", i, edge)
+		}
+	}
+	withoutEdges := *result
+	withoutEdges.IAMPositiveEdges = nil
+	withJSON, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	withoutJSON, err := json.Marshal(&withoutEdges)
+	if err != nil {
+		t.Fatalf("marshal result without edges: %v", err)
+	}
+	if !bytes.Equal(withJSON, withoutJSON) {
+		t.Fatalf("default JSON changed with private edges:\nwith=%s\nwithout=%s", withJSON, withoutJSON)
+	}
+}
+
+// WO-119@v2: canonical edge ordering must not inherit provider list or policy statement order.
+func TestRoleScanner_PositiveEdgeOrderingIndependentOfRoleOrder(t *testing.T) {
+	fixedNow := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	lastUsed := fixedNow.Add(-time.Hour)
+	web := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}}`)
+	pod := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}}`)
+	roles := []iamtypes.Role{
+		{RoleName: awssdk.String("b"), Arn: awssdk.String("arn:aws:iam::123456789012:role/b"), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &lastUsed}, AssumeRolePolicyDocument: &pod},
+		{RoleName: awssdk.String("a"), Arn: awssdk.String("arn:aws:iam::123456789012:role/a"), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &lastUsed}, AssumeRolePolicyDocument: &web},
+	}
+	scan := func(input []iamtypes.Role) []iam.IAMPositiveEdge {
+		t.Helper()
+		scanner := NewRoleScanner(&mockIAM{roles: input}, "123456789012")
+		scanner.now = func() time.Time { return fixedNow }
+		result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+		if err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		return result.IAMPositiveEdges
+	}
+	forward := scan(roles)
+	reverse := scan([]iamtypes.Role{roles[1], roles[0]})
+	if !reflect.DeepEqual(forward, reverse) {
+		t.Fatalf("edge order depends on provider order:\nforward=%#v\nreverse=%#v", forward, reverse)
+	}
+}
+
+// WO-119@v2: trust evidence remains independent of default UNUSED_ROLE suppression.
+func TestRoleScanner_ServiceLinkedRoleStillEmitsKnownPositiveEdges(t *testing.T) {
+	fixedNow := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	lastUsed := fixedNow.Add(-time.Hour)
+	pod := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}}`)
+	role := iamtypes.Role{
+		RoleName:                 awssdk.String("AWSServiceRoleForExample"),
+		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/AWSServiceRoleForExample"),
+		Path:                     awssdk.String("/aws-service-role/example.amazonaws.com/"),
+		RoleLastUsed:             &iamtypes.RoleLastUsed{LastUsedDate: &lastUsed},
+		AssumeRolePolicyDocument: &pod,
+	}
+	mock := &mockIAM{roles: []iamtypes.Role{role}}
+	scanner := NewRoleScanner(mock, "123456789012")
+	scanner.now = func() time.Time { return fixedNow }
+	result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Findings) != 0 || len(result.IAMPositiveEdges) != 2 || len(mock.getRoleCalls) != 0 {
+		t.Fatalf("findings=%#v edges=%#v GetRole=%#v", result.Findings, result.IAMPositiveEdges, mock.getRoleCalls)
+	}
+}
+
+// WO-124: an injected scan clock pins threshold semantics and every derived timestamp.
+func TestRoleScanner_FixedClockCutoffBoundaries(t *testing.T) {
+	fixedNow := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	cutoff := fixedNow.AddDate(0, 0, -90)
+	beforeCutoff := cutoff.Add(-time.Nanosecond)
+	future := fixedNow.Add(time.Hour)
+	roles := []iamtypes.Role{
+		{RoleName: awssdk.String("exact"), Arn: awssdk.String("arn:aws:iam::123456789012:role/exact"), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &cutoff}},
+		{RoleName: awssdk.String("before"), Arn: awssdk.String("arn:aws:iam::123456789012:role/before"), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &beforeCutoff}},
+		{RoleName: awssdk.String("future"), Arn: awssdk.String("arn:aws:iam::123456789012:role/future"), RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &future}},
+	}
+	scanner := NewRoleScanner(&mockIAM{roles: roles}, "123456789012")
+	scanner.now = func() time.Time { return fixedNow }
+	result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].ResourceName != "before" || result.Findings[0].Metadata["days_since_use"] != 90 {
+		t.Fatalf("findings = %#v, want only stable before-cutoff result", result.Findings)
+	}
+	if len(result.IAMPositiveEdges) != 3 {
+		t.Fatalf("activity edges = %#v", result.IAMPositiveEdges)
+	}
+	for _, edge := range result.IAMPositiveEdges {
+		_, _, ok := iam.RoleActivityEvidence(edge)
+		if !ok || !edge.ObservedAt().Equal(fixedNow) {
+			t.Fatalf("activity edge = %#v, want fixed observed_at", edge)
+		}
 	}
 }
 
@@ -951,6 +1159,7 @@ func TestRoleScanner_ListError(t *testing.T) {
 	}
 }
 
+// WO-125: all AWS partitions must use the same structural external-account decision.
 func TestIsExternalAccount(t *testing.T) {
 	scanner := &RoleScanner{accountID: "123456789012"}
 
@@ -962,6 +1171,13 @@ func TestIsExternalAccount(t *testing.T) {
 		{"arn:aws:iam::123456789012:root", false},
 		{"arn:aws:iam::999999999999:root", true},
 		{"arn:aws:iam::999999999999:role/some-role", true},
+		{"arn:aws-us-gov:iam::999999999999:root", true},
+		{"arn:aws-cn:iam::999999999999:role/some-role", true},
+		{"arn:aws-us-gov:iam::123456789012:root", false},
+		{"arn:aws-cn:iam::123456789012:role/same-account", false},
+		{"arn:aws-us-gov:sts::999999999999:assumed-role/example/session", false},
+		{"arn:aws:iam:::root", false},
+		{"arn:aws:iam::999999999999", false},
 		{"not-an-arn", false},
 	}
 
