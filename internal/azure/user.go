@@ -2,8 +2,11 @@ package azure
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"sort"
 	"time"
 
 	"github.com/ppiankov/iamspectre/internal/iam"
@@ -20,6 +23,13 @@ const (
 	temporaryAccessPassMethodType = "#microsoft.graph.temporaryAccessPassAuthenticationMethod"
 	windowsHelloMethodType        = "#microsoft.graph.windowsHelloForBusinessAuthenticationMethod"
 	platformCredentialMethodType  = "#microsoft.graph.platformCredentialAuthenticationMethod"
+)
+
+// WO-106@v2: name bounded access-coverage dimensions shared by the two protected checks.
+const (
+	azureMFAMethodsCapability       = "azure_mfa_methods"
+	azureSecurityDefaultsCapability = "azure_security_defaults"
+	graphPermissionDeniedCause      = "permission_denied"
 )
 
 // WO-77: UserScanner carries tenant-scoped user activity evidence through each check.
@@ -78,6 +88,8 @@ func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	// WO-77: keep member and guest coverage independently actionable.
 	memberMissing, memberEvaluable := 0, 0
 	guestMissing, guestEvaluable := 0, 0
+	mfaUnknownByCause := make(map[string]int) // WO-106@v2: aggregate authorization gates instead of flooding errors.
+	mfaEvaluable := 0
 
 	for _, user := range s.users {
 		// WO-15: skip excluded guests before any per-user evaluation or API call.
@@ -107,10 +119,16 @@ func (s *UserScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 		}
 
 		s.checkStale(user, cutoff, evidenceNow, result)
-		s.checkMFA(ctx, user, result)
+		evaluable, coverageCause := s.checkMFA(ctx, user, result)
+		if evaluable {
+			mfaEvaluable++
+		} else if coverageCause != "" {
+			mfaUnknownByCause[coverageCause]++
+		}
 	}
 	s.appendActivityCoverage(result, iam.FindingStaleUser, memberMissing, memberEvaluable, cfg.StaleDays)
 	s.appendActivityCoverage(result, iam.FindingStaleGuestUser, guestMissing, guestEvaluable, cfg.StaleDays)
+	s.appendMFACoverage(result, mfaUnknownByCause, mfaEvaluable)
 
 	if !hasSignInData && len(s.users) > 0 {
 		slog.Warn("signInActivity unavailable — Azure AD Premium P1 required for stale user detection")
@@ -202,12 +220,16 @@ func (s *UserScanner) checkStale(user User, cutoff, evidenceNow time.Time, resul
 }
 
 // WO-78: checkMFA classifies only explicit MFA-capable methods and preserves evidence scope.
-func (s *UserScanner) checkMFA(ctx context.Context, user User, result *iam.ScanResult) {
+// WO-106@v2: return evaluability and access coverage separately from operational errors.
+func (s *UserScanner) checkMFA(ctx context.Context, user User, result *iam.ScanResult) (bool, string) {
 	methods, err := s.api.ListAuthenticationMethods(ctx, user.ID)
 	if err != nil {
+		if cause, covered := classifyGraphAccessCoverageError(err); covered {
+			return false, cause
+		}
 		slog.Warn("Failed to check MFA", "user", user.UserPrincipalName, "error", err)
 		result.Errors = append(result.Errors, fmt.Sprintf("check MFA for %s: %v", user.UserPrincipalName, err))
-		return
+		return false, ""
 	}
 
 	hasMFA := false
@@ -244,6 +266,29 @@ func (s *UserScanner) checkMFA(ctx context.Context, user User, result *iam.ScanR
 			Metadata:       metadata,
 		})
 	}
+	return true, ""
+}
+
+// WO-106@v2: emit one deterministic MFA coverage observation per access-gating cause.
+func (s *UserScanner) appendMFACoverage(result *iam.ScanResult, unknownByCause map[string]int, evaluable int) {
+	if len(unknownByCause) == 0 {
+		return
+	}
+	causes := make([]string, 0, len(unknownByCause))
+	unknown := 0
+	for cause, count := range unknownByCause {
+		causes = append(causes, cause)
+		unknown += count
+	}
+	sort.Strings(causes)
+	for _, cause := range causes {
+		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
+			Capability: azureMFAMethodsCapability, Cause: cause,
+			Scope: s.coverageScope, FindingID: iam.FindingNoMFA, AffectedCount: unknownByCause[cause],
+			EvaluableCount: evaluable, TotalCount: evaluable + unknown,
+			FeatureStage: "v1.0", MaxConsequence: iam.SeverityHigh,
+		})
+	}
 }
 
 // WO-78: isMFACapableMethodType fails closed for SSPR-only and unknown Graph method types.
@@ -266,6 +311,14 @@ func isMFACapableMethodType(methodType string) bool {
 func (s *UserScanner) checkLegacyAuth(ctx context.Context, result *iam.ScanResult) {
 	policy, err := s.api.GetSecurityDefaults(ctx)
 	if err != nil {
+		if cause, covered := classifyGraphAccessCoverageError(err); covered {
+			result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
+				Capability: azureSecurityDefaultsCapability, Cause: cause,
+				Scope: s.coverageScope, FindingID: iam.FindingLegacyAuth,
+				AffectedCount: 1, TotalCount: 1, FeatureStage: "v1.0", MaxConsequence: iam.SeverityLow,
+			})
+			return
+		}
 		slog.Warn("Failed to check security defaults", "error", err)
 		result.Errors = append(result.Errors, fmt.Sprintf("check security defaults: %v", err))
 		return
@@ -287,4 +340,16 @@ func (s *UserScanner) checkLegacyAuth(ctx context.Context, result *iam.ScanResul
 			},
 		})
 	}
+}
+
+// WO-106@v2: classify only typed Graph 403s; every other failure remains operational.
+func classifyGraphAccessCoverageError(err error) (string, bool) {
+	var graphErr *GraphHTTPError
+	if !errors.As(err, &graphErr) || graphErr == nil || graphErr.StatusCode != http.StatusForbidden {
+		return "", false
+	}
+	if graphErr.Code == "Authentication_RequestFromNonPremiumTenantOrB2CTenant" {
+		return userActivityPremiumRequiredCause, true
+	}
+	return graphPermissionDeniedCause, true
 }

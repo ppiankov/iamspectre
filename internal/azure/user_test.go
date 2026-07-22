@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -436,6 +437,119 @@ func TestUserScanner_LegacyAuth_SecurityDefaultsError(t *testing.T) {
 	}
 }
 
+// WO-106@v2: aggregate repeated MFA authorization gates without counting excluded users.
+func TestUserScanner_MFACoverageGroupsGraph403s(t *testing.T) {
+	users := []User{
+		{ID: "denied-1", UserPrincipalName: "denied-1@example.com", UserType: "Member"},
+		{ID: "denied-2", UserPrincipalName: "denied-2@example.com", UserType: "Member"},
+		{ID: "premium", UserPrincipalName: "premium@example.com", UserType: "Member"},
+		{ID: "evaluable", UserPrincipalName: "evaluable@example.com", UserType: "Member"},
+		{ID: "excluded", UserPrincipalName: "excluded@example.com", UserType: "Member"},
+	}
+	permissionDenied := fmt.Errorf("wrapped: %w", &GraphHTTPError{
+		StatusCode: http.StatusForbidden, Code: "Authorization_RequestDenied",
+	})
+	premiumRequired := &GraphHTTPError{
+		StatusCode: http.StatusForbidden, Code: "Authentication_RequestFromNonPremiumTenantOrB2CTenant",
+	}
+	mock := &mockGraph{
+		authMethods: map[string][]AuthenticationMethod{
+			"evaluable": {{ODataType: authenticatorMethodType}},
+		},
+		authMethodsErr: map[string]error{
+			"denied-1": permissionDenied,
+			"denied-2": &GraphHTTPError{StatusCode: http.StatusForbidden, Code: "accessDenied"},
+			"premium":  premiumRequired,
+			"excluded": fmt.Errorf("excluded MFA must not be queried"),
+		},
+		secDefaults: &SecurityDefaultsPolicy{IsEnabled: true},
+	}
+	cfg := iam.ScanConfig{
+		StaleDays: 90,
+		Exclude: iam.ExcludeConfig{ResourceIDs: map[string]bool{
+			"excluded": true,
+		}},
+	}
+
+	result, err := NewUserScannerWithScope(mock, users, nil, "azure-tenant:tenant-a").Scan(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("MFA authorization gates produced errors: %#v", result.Errors)
+	}
+
+	gaps := coverageGapsForCapability(result.CoverageGaps, "azure_mfa_methods")
+	if len(gaps) != 2 {
+		t.Fatalf("MFA coverage gaps = %#v", gaps)
+	}
+	wants := []struct {
+		cause    string
+		affected int
+	}{
+		{cause: "permission_denied", affected: 2},
+		{cause: "premium_license_required", affected: 1},
+	}
+	for index, want := range wants {
+		gap := gaps[index]
+		if gap.Cause != want.cause || gap.AffectedCount != want.affected || gap.EvaluableCount != 1 || gap.TotalCount != 4 {
+			t.Fatalf("MFA coverage gap[%d] = %#v, want cause=%s affected=%d evaluable=1 total=4", index, gap, want.cause, want.affected)
+		}
+		if gap.Scope != "azure-tenant:tenant-a" || gap.FindingID != iam.FindingNoMFA || gap.MaxConsequence != iam.SeverityHigh {
+			t.Fatalf("MFA coverage contract = %#v", gap)
+		}
+	}
+}
+
+// WO-106@v2: a tenant-level security-defaults 403 becomes one low-consequence coverage gap.
+func TestUserScanner_SecurityDefaultsGraph403BecomesCoverage(t *testing.T) {
+	mock := &mockGraph{secDefaultsErr: fmt.Errorf("wrapped: %w", &GraphHTTPError{
+		StatusCode: http.StatusForbidden, Code: "Authorization_RequestDenied",
+	})}
+	result, err := NewUserScannerWithScope(mock, nil, nil, "azure-tenant:tenant-a").Scan(
+		context.Background(), iam.ScanConfig{StaleDays: 90},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("security-defaults authorization gate produced errors: %#v", result.Errors)
+	}
+	gaps := coverageGapsForCapability(result.CoverageGaps, "azure_security_defaults")
+	if len(gaps) != 1 {
+		t.Fatalf("security-defaults coverage gaps = %#v", gaps)
+	}
+	gap := gaps[0]
+	if gap.Cause != "permission_denied" || gap.Scope != "azure-tenant:tenant-a" || gap.FindingID != iam.FindingLegacyAuth ||
+		gap.AffectedCount != 1 || gap.EvaluableCount != 0 || gap.TotalCount != 1 || gap.MaxConsequence != iam.SeverityLow {
+		t.Fatalf("security-defaults coverage contract = %#v", gap)
+	}
+}
+
+// WO-106@v2: only typed forbidden Graph failures qualify as bounded access coverage.
+func TestClassifyGraphAccessCoverageError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantCause string
+		wantOK    bool
+	}{
+		{name: "permission", err: &GraphHTTPError{StatusCode: http.StatusForbidden, Code: "Authorization_RequestDenied"}, wantCause: "permission_denied", wantOK: true},
+		{name: "unknown forbidden code", err: &GraphHTTPError{StatusCode: http.StatusForbidden, Code: "missingScope"}, wantCause: "permission_denied", wantOK: true},
+		{name: "premium", err: fmt.Errorf("wrapped: %w", &GraphHTTPError{StatusCode: http.StatusForbidden, Code: "Authentication_RequestFromNonPremiumTenantOrB2CTenant"}), wantCause: "premium_license_required", wantOK: true},
+		{name: "server error", err: &GraphHTTPError{StatusCode: http.StatusInternalServerError, Code: "InternalError"}},
+		{name: "untyped", err: fmt.Errorf("network unavailable")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cause, ok := classifyGraphAccessCoverageError(test.err)
+			if cause != test.wantCause || ok != test.wantOK {
+				t.Fatalf("classification = (%q, %t), want (%q, %t)", cause, ok, test.wantCause, test.wantOK)
+			}
+		})
+	}
+}
+
 func TestUserScanner_NoSignInActivity(t *testing.T) {
 	users := []User{
 		{
@@ -577,4 +691,15 @@ func findCoverageGap(gaps []iam.CoverageGapObservation, id iam.FindingID) *iam.C
 		}
 	}
 	return nil
+}
+
+// WO-106@v2: select one capability while preserving emitted order for deterministic assertions.
+func coverageGapsForCapability(gaps []iam.CoverageGapObservation, capability string) []iam.CoverageGapObservation {
+	matched := make([]iam.CoverageGapObservation, 0, len(gaps))
+	for _, gap := range gaps {
+		if gap.Capability == capability {
+			matched = append(matched, gap)
+		}
+	}
+	return matched
 }
