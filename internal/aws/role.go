@@ -44,6 +44,7 @@ func (s *RoleScanner) Type() iam.ResourceType {
 
 // Scan examines all IAM roles for unused and cross-account trust issues.
 // WO-104@v3: aggregate unavailable usage evidence across eligible roles into one coverage observation.
+// WO-107@v2: enrich only eligible roles whose list record lacks usable RoleLastUsed evidence.
 func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanResult, error) {
 	roles, err := s.listRoles(ctx)
 	if err != nil {
@@ -71,13 +72,17 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 		// WO-44@v2: suppress only UNUSED_ROLE; independent trust analysis always follows.
 		if includeUnused {
 			usageTotal++ // WO-104@v3: count only roles eligible for the UNUSED_ROLE decision.
-			if role.RoleLastUsed != nil && role.RoleLastUsed.LastUsedDate != nil {
+			roleLastUsed, err := s.resolveRoleLastUsed(ctx, role)
+			if err != nil {
+				return nil, err
+			}
+			if roleLastUsed != nil && roleLastUsed.LastUsedDate != nil {
 				usageEvaluable++
-				if role.RoleLastUsed.LastUsedDate.Before(threshold) {
-					daysSince := int(now.Sub(*role.RoleLastUsed.LastUsedDate).Hours() / 24)
+				if roleLastUsed.LastUsedDate.Before(threshold) {
+					daysSince := int(now.Sub(*roleLastUsed.LastUsedDate).Hours() / 24)
 					message := fmt.Sprintf("Role not assumed in %d days", daysSince)
 					metadata := map[string]any{
-						"last_used":      role.RoleLastUsed.LastUsedDate.Format(time.RFC3339),
+						"last_used":      roleLastUsed.LastUsedDate.Format(time.RFC3339),
 						"days_since_use": daysSince,
 					}
 					if webIdentity {
@@ -119,6 +124,32 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 	}
 
 	return result, nil
+}
+
+// WO-107@v2: ListRoles omits usage evidence, so recover only that field through one bounded request.
+func (s *RoleScanner) resolveRoleLastUsed(ctx context.Context, role iamtypes.Role) (*iamtypes.RoleLastUsed, error) {
+	if role.RoleLastUsed != nil && role.RoleLastUsed.LastUsedDate != nil {
+		return role.RoleLastUsed, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	roleName := awssdk.ToString(role.RoleName)
+	if roleName == "" {
+		return nil, nil
+	}
+
+	out, err := s.client.GetRole(ctx, &iamsvc.GetRoleInput{RoleName: awssdk.String(roleName)})
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, nil
+	}
+	if out == nil || out.Role == nil {
+		return nil, nil
+	}
+	return out.Role.RoleLastUsed, nil
 }
 
 // WO-54@v3: classify only determinate OIDC trust grants for metadata annotation.
