@@ -169,9 +169,19 @@ type ScanResult struct {
 	Findings                            []Finding                `json:"findings"`
 	Errors                              []string                 `json:"errors,omitempty"`
 	CoverageGaps                        []CoverageGapObservation `json:"coverage_gaps,omitempty"` // WO-70@v4: keep missing evidence separate from actionable findings.
+	CoverageGapDetails                  []CoverageGapDetail      `json:"-"`                       // WO-110@v5: retain opt-in role detail only inside the scan pipeline.
 	PrincipalsScanned                   int                      `json:"principals_scanned"`
 	ObservedPrincipalIDs                map[string]struct{}      `json:"-"` // WO-89@v4: carry identities only far enough to compute cross-scanner cardinality.
 	PrincipalIdentityAccountingComplete bool                     `json:"-"` // WO-89@v4: distinguish a complete empty set from unsupported accounting.
+}
+
+// WO-110@v5: CoverageGapDetail carries private resource identity for opt-in diagnostics and dependent enrichment.
+type CoverageGapDetail struct {
+	Capability   string       // WO-110@v5: identify the unavailable evidence capability.
+	Cause        string       // WO-110@v5: retain the role-specific bounded failure cause.
+	ResourceType ResourceType // WO-110@v5: keep dependent enrichment type-safe.
+	ResourceID   string       // WO-110@v5: carry the role ARN only inside the scan pipeline.
+	ResourceName string       // WO-110@v5: carry the role name only for opt-in diagnostics.
 }
 
 // WO-70@v4: CoverageGapObservation records one unevaluable check without fabricating a finding.

@@ -1,8 +1,11 @@
 package aws
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"testing"
@@ -79,6 +82,11 @@ func TestRoleScanner_NeverUsedRole(t *testing.T) {
 
 // WO-104@v3: validate the canonical role-usage observation without coupling to reporter aggregation.
 func assertRoleUsageCoverage(t *testing.T, result *iam.ScanResult, affected, evaluable, total int) {
+	assertRoleUsageCoverageCause(t, result, "evidence_unavailable", affected, evaluable, total)
+}
+
+// WO-110@v5: assert the legacy aggregate without coupling to role-level private detail.
+func assertRoleUsageCoverageCause(t *testing.T, result *iam.ScanResult, cause string, affected, evaluable, total int) {
 	t.Helper()
 	if len(result.Errors) != 0 {
 		t.Fatalf("errors = %#v, want no missing-evidence diagnostics", result.Errors)
@@ -87,7 +95,7 @@ func assertRoleUsageCoverage(t *testing.T, result *iam.ScanResult, affected, eva
 		t.Fatalf("coverage gaps = %#v, want one role-usage observation", result.CoverageGaps)
 	}
 	gap := result.CoverageGaps[0]
-	if gap.Capability != "aws_role_last_used" || gap.Cause != "evidence_unavailable" ||
+	if gap.Capability != "aws_role_last_used" || gap.Cause != cause ||
 		gap.Scope != "aws-account:123456789012" || gap.FindingID != iam.FindingUnusedRole ||
 		gap.AffectedCount != affected || gap.EvaluableCount != evaluable || gap.TotalCount != total ||
 		gap.MaxConsequence != iam.SeverityMedium {
@@ -401,6 +409,73 @@ func TestClassifyWebIdentityTrust(t *testing.T) {
 	}
 }
 
+// WO-109@v2: require the complete determinate EKS Pod Identity trust grant.
+func TestClassifyPodIdentityTrust(t *testing.T) {
+	tests := []struct {
+		name, statement string
+		want            bool
+	}{
+		{name: "canonical", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}`, want: true},
+		{name: "mixed case", statement: `{"Effect":"Allow","Principal":{"Service":"PODS.EKS.AMAZONAWS.COM"},"Action":["STS:ASSUMEROLE","STS:TAGSESSION"]}`, want: true},
+		{name: "wildcard", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":"sts:*"}`, want: true},
+		{name: "split statements", statement: `[{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":"sts:AssumeRole"},{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":"sts:TagSession"}]`, want: true},
+		{name: "missing assume role", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":"sts:TagSession"}`},
+		{name: "missing tag session", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":"sts:AssumeRole"}`},
+		{name: "wrong service", statement: `{"Effect":"Allow","Principal":{"Service":"eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}`},
+		{name: "deny", statement: `{"Effect":"Deny","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}`},
+		{name: "not action", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"NotAction":"s3:GetObject"}`},
+		{name: "variable", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:${Operation}"]}`},
+		{name: "malformed action", statement: `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":42}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := url.QueryEscape(`{"Statement":` + tt.statement + `}`)
+			if got := classifyPodIdentityTrust(&encoded); got != tt.want {
+				t.Fatalf("classifyPodIdentityTrust() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-109@v2: Pod Identity metadata is deterministic and never changes finding presentation.
+func TestRoleScanner_PodIdentityUnusedRolePolicy(t *testing.T) {
+	podStatement := `{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}`
+	webStatement := `{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}`
+	tests := []struct {
+		name       string
+		statements string
+		want       any
+	}{
+		{name: "pod identity", statements: podStatement, want: "pod_identity"},
+		{name: "mixed trust prefers pod identity", statements: `[` + webStatement + `,` + podStatement + `]`, want: "pod_identity"},
+		{name: "classic web identity", statements: webStatement, want: "web_identity"},
+		{name: "ordinary trust", statements: `{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"sts:AssumeRole"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trust := url.QueryEscape(`{"Statement":` + tt.statements + `}`)
+			stale := time.Now().UTC().AddDate(0, 0, -120)
+			role := iamtypes.Role{
+				RoleName:                 awssdk.String("candidate"),
+				Arn:                      awssdk.String("arn:aws:iam::123456789012:role/candidate"),
+				RoleLastUsed:             &iamtypes.RoleLastUsed{LastUsedDate: &stale},
+				AssumeRolePolicyDocument: &trust,
+			}
+			result, err := NewRoleScanner(&mockIAM{roles: []iamtypes.Role{role}}, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+			if err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			finding := findFinding(result.Findings, iam.FindingUnusedRole)
+			if finding == nil || finding.Severity != iam.SeverityMedium || finding.Recommendation != customerManagedRoleGuidance {
+				t.Fatalf("finding presentation = %#v", finding)
+			}
+			if got := finding.Metadata["trust_mechanism"]; got != tt.want {
+				t.Fatalf("trust_mechanism = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 // WO-54@v3: web-identity trust annotates known stale evidence without changing its presentation.
 func TestRoleScanner_WebIdentityUnusedRolePolicy(t *testing.T) {
 	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}}`)
@@ -450,6 +525,7 @@ func TestRoleScanner_EnrichesMissingUsageEvidence(t *testing.T) {
 		getRole      func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error)
 		wantFinding  bool
 		wantCoverage bool
+		wantCause    string
 	}{
 		{
 			name: "stale",
@@ -467,9 +543,10 @@ func TestRoleScanner_EnrichesMissingUsageEvidence(t *testing.T) {
 		{
 			name: "denied",
 			getRole: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
-				return nil, errors.New("access denied")
+				return nil, codedAPIError{code: "AccessDenied"}
 			},
 			wantCoverage: true,
+			wantCause:    "getrole_denied",
 		},
 		{
 			name: "nil role",
@@ -477,6 +554,7 @@ func TestRoleScanner_EnrichesMissingUsageEvidence(t *testing.T) {
 				return &iamsvc.GetRoleOutput{}, nil
 			},
 			wantCoverage: true,
+			wantCause:    "evidence_unavailable",
 		},
 		{
 			name: "nil usage evidence",
@@ -484,6 +562,7 @@ func TestRoleScanner_EnrichesMissingUsageEvidence(t *testing.T) {
 				return &iamsvc.GetRoleOutput{Role: &iamtypes.Role{}}, nil
 			},
 			wantCoverage: true,
+			wantCause:    "evidence_unavailable",
 		},
 	}
 
@@ -507,10 +586,121 @@ func TestRoleScanner_EnrichesMissingUsageEvidence(t *testing.T) {
 			}
 			if tt.wantCoverage {
 				assertRoleUsageCoverage(t, result, 1, 0, 1)
+				if len(result.CoverageGapDetails) != 1 || result.CoverageGapDetails[0].Cause != tt.wantCause {
+					t.Fatalf("coverage details = %#v, want cause=%q", result.CoverageGapDetails, tt.wantCause)
+				}
 			} else if len(result.CoverageGaps) != 0 {
 				t.Fatalf("coverage gaps = %#v, want none", result.CoverageGaps)
 			}
 		})
+	}
+}
+
+// WO-110@v5: codedAPIError supplies deterministic provider codes without SDK coupling.
+type codedAPIError struct {
+	code string // WO-110@v5: injected stable code for failure-classification fixtures.
+}
+
+// WO-110@v5: implement error text without leaking injected codes into log assertions.
+func (e codedAPIError) Error() string {
+	return "coded provider failure"
+}
+
+// WO-110@v5: expose the stable injected code through the production classifier seam.
+func (e codedAPIError) ErrorCode() string {
+	return e.code
+}
+
+// WO-110@v5: provider codes map to a closed, non-sensitive coverage cause set.
+func TestClassifyGetRoleFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "access denied", err: codedAPIError{code: "AccessDeniedException"}, want: "getrole_denied"},
+		{name: "unauthorized operation", err: codedAPIError{code: "UnauthorizedOperation"}, want: "getrole_denied"},
+		{name: "throttling", err: codedAPIError{code: "ThrottlingException"}, want: "getrole_throttled"},
+		{name: "request limit", err: codedAPIError{code: "RequestLimitExceeded"}, want: "getrole_throttled"},
+		{name: "wrapped", err: fmt.Errorf("request: %w", codedAPIError{code: "AccessDenied"}), want: "getrole_denied"},
+		{name: "other code", err: codedAPIError{code: "ServiceFailure"}, want: "getrole_failed"},
+		{name: "plain error", err: errors.New("provider marker"), want: "getrole_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyGetRoleFailure(tt.err); got != tt.want {
+				t.Fatalf("classifyGetRoleFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// WO-110@v5: specific causes stay private while the legacy aggregate denominator remains singular.
+func TestRoleScanner_CoverageGapCausesAndDetails(t *testing.T) {
+	oldLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	roleNames := []string{"absent-role", "denied-role", "throttled-role", "failed-role"}
+	roles := make([]iamtypes.Role, 0, len(roleNames))
+	for _, roleName := range roleNames {
+		roles = append(roles, iamtypes.Role{
+			RoleName: awssdk.String(roleName),
+			Arn:      awssdk.String("arn:aws:iam::123456789012:role/" + roleName),
+		})
+	}
+	mock := &mockIAM{
+		roles: roles,
+		getRoleFn: func(_ context.Context, input *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+			switch awssdk.ToString(input.RoleName) {
+			case "absent-role":
+				return &iamsvc.GetRoleOutput{Role: &iamtypes.Role{}}, nil
+			case "denied-role":
+				return nil, codedAPIError{code: "AccessDenied"}
+			case "throttled-role":
+				return nil, codedAPIError{code: "Throttling"}
+			default:
+				return nil, errors.New("provider marker must not be logged")
+			}
+		},
+	}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	wantCauses := []string{"evidence_unavailable", "getrole_denied", "getrole_throttled", "getrole_failed"}
+	if len(result.CoverageGaps) != 1 {
+		t.Fatalf("coverage gaps = %#v", result.CoverageGaps)
+	}
+	gap := result.CoverageGaps[0]
+	if gap.Cause != "evidence_unavailable" || gap.AffectedCount != 4 || gap.EvaluableCount != 0 || gap.TotalCount != 4 {
+		t.Fatalf("coverage gap = %#v, want one unchanged aggregate", gap)
+	}
+	if len(result.CoverageGapDetails) != len(roleNames) {
+		t.Fatalf("coverage details = %#v", result.CoverageGapDetails)
+	}
+	for i, detail := range result.CoverageGapDetails {
+		if detail.ResourceName != roleNames[i] || detail.Cause != wantCauses[i] ||
+			detail.ResourceID != "arn:aws:iam::123456789012:role/"+roleNames[i] ||
+			detail.ResourceType != iam.ResourceIAMRole || detail.Capability != "aws_role_last_used" {
+			t.Fatalf("coverage detail[%d] = %#v", i, detail)
+		}
+	}
+	logOutput := logs.String()
+	for _, roleName := range roleNames {
+		if !strings.Contains(logOutput, roleName) {
+			t.Fatalf("debug output missing role %q: %s", roleName, logOutput)
+		}
+	}
+	for _, cause := range wantCauses {
+		if !strings.Contains(logOutput, "cause="+cause) {
+			t.Fatalf("debug output missing cause %q: %s", cause, logOutput)
+		}
+	}
+	if !strings.Contains(logOutput, "role_last_used_coverage_detail") || strings.Contains(logOutput, "provider marker") {
+		t.Fatalf("debug output = %s", logOutput)
 	}
 }
 

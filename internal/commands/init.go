@@ -128,6 +128,7 @@ const sampleAzureGraphPermissions = `[
 ]
 `
 
+// WO-113@v3: generated credentials include the read-only role enrichment prerequisite.
 const sampleAWSIAMPolicy = `{
   "Version": "2012-10-17",
   "Statement": [
@@ -139,6 +140,7 @@ const sampleAWSIAMPolicy = `{
         "iam:GetCredentialReport",
         "iam:ListUsers",
         "iam:ListRoles",
+        "iam:GetRole",
         "iam:ListPolicies",
         "iam:GetPolicyVersion",
         "iam:GetPolicy",

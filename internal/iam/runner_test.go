@@ -39,7 +39,8 @@ func TestRunScannersAggregatesAndContinues(t *testing.T) {
 	scanners := []Scanner{
 		runnerScanner{typeID: ResourceIAMUser, result: &ScanResult{
 			Findings: []Finding{{ID: FindingStaleUser}}, Errors: []string{"nested"}, PrincipalsScanned: 2,
-			CoverageGaps: []CoverageGapObservation{{Capability: "activity", Scope: "account:a", FindingID: FindingStaleUser}},
+			CoverageGaps:       []CoverageGapObservation{{Capability: "activity", Scope: "account:a", FindingID: FindingStaleUser}},
+			CoverageGapDetails: []CoverageGapDetail{{Capability: "activity", ResourceName: "private-user"}}, // WO-110@v5: private detail must survive aggregation.
 		}, scan: func(gotCtx context.Context, gotCfg ScanConfig) {
 			forwarded = gotCtx.Value(key) == "value" && gotCfg.StaleDays == cfg.StaleDays
 		}},
@@ -50,7 +51,9 @@ func TestRunScannersAggregatesAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunScanners: %v", err)
 	}
-	if !forwarded || len(result.Findings) != 1 || len(result.CoverageGaps) != 1 || result.PrincipalsScanned != 2 {
+	if !forwarded || len(result.Findings) != 1 || len(result.CoverageGaps) != 1 ||
+		len(result.CoverageGapDetails) != 1 || result.CoverageGapDetails[0].ResourceName != "private-user" ||
+		result.PrincipalsScanned != 2 {
 		t.Fatalf("unexpected aggregate: %#v forwarded=%v", result, forwarded)
 	}
 	joined := strings.Join(result.Errors, "|")
@@ -65,16 +68,17 @@ func TestRunScannersAggregatesAndContinues(t *testing.T) {
 func TestRunScannersPreservesResultReturnedWithError(t *testing.T) {
 	result, err := RunScanners(context.Background(), []Scanner{
 		runnerScanner{typeID: ResourceAzureUser, result: &ScanResult{
-			Findings:          []Finding{{ID: FindingNoMFA}},
-			Errors:            []string{"security defaults: denied"},
-			CoverageGaps:      []CoverageGapObservation{{Capability: "activity", FindingID: FindingStaleUser}},
-			PrincipalsScanned: 2,
+			Findings:           []Finding{{ID: FindingNoMFA}},
+			Errors:             []string{"security defaults: denied"},
+			CoverageGaps:       []CoverageGapObservation{{Capability: "activity", FindingID: FindingStaleUser}},
+			CoverageGapDetails: []CoverageGapDetail{{Capability: "activity", ResourceName: "private-user"}}, // WO-110@v5: error outcomes retain acquired private detail.
+			PrincipalsScanned:  2,
 		}, err: errors.New("fetch users: denied")},
 	}, ScanConfig{})
 	if err != nil {
 		t.Fatalf("RunScanners: %v", err)
 	}
-	if len(result.Findings) != 1 || len(result.CoverageGaps) != 1 || result.PrincipalsScanned != 2 {
+	if len(result.Findings) != 1 || len(result.CoverageGaps) != 1 || len(result.CoverageGapDetails) != 1 || result.PrincipalsScanned != 2 {
 		t.Fatalf("result-plus-error evidence was lost: %#v", result)
 	}
 	joined := strings.Join(result.Errors, "|")

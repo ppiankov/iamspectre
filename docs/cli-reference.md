@@ -178,7 +178,7 @@ IAMSpectre requires read-only access. Run `iamspectre init` to generate the mini
 ### AWS
 
 - `iam:GenerateCredentialReport`, `iam:GetCredentialReport`
-- `iam:ListRoles`, `iam:ListPolicies`, `iam:GetPolicyVersion`
+- `iam:ListRoles`, `iam:GetRole`, `iam:ListPolicies`, `iam:GetPolicyVersion`
 - `sts:GetCallerIdentity`
 
 ### GCP
