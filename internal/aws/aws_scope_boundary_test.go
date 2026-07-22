@@ -12,8 +12,10 @@ import (
 )
 
 // WO-22@v3: centralize the reviewed AWS client boundary for the internal production tree.
+// WO-120@v3: admit the read-only EKS client required by the bounded Pod Identity source.
 var allowedAWSServices = map[string]bool{
 	"accessanalyzer": true,
+	"eks":            true,
 	"iam":            true,
 	"organizations":  true,
 	"sts":            true,
