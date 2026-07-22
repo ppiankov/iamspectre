@@ -3,7 +3,7 @@
 [![CI](https://github.com/ppiankov/iamspectre/actions/workflows/ci.yml/badge.svg)](https://github.com/ppiankov/iamspectre/actions/workflows/ci.yml)
 [![ANCC](https://img.shields.io/badge/ANCC-compliant-brightgreen)](https://ancc.dev)
 
-**iamspectre** — Cross-cloud IAM auditor for AWS, GCP, and Azure AD. Part of [SpectreHub](https://github.com/ppiankov/spectrehub).
+**iamspectre** — Cross-cloud IAM auditor for AWS, GCP, and Azure AD. Part of [SpectreHub](https://spectrehub.dev).
 
 ## What it is
 
@@ -67,7 +67,7 @@ iamspectre aws --format json
 
 ## SpectreHub integration
 
-iamspectre feeds IAM hygiene findings into [SpectreHub](https://github.com/ppiankov/spectrehub) for unified visibility across your infrastructure.
+iamspectre feeds IAM hygiene findings into [SpectreHub](https://spectrehub.dev) for unified visibility across your infrastructure.
 
 ```sh
 spectrehub collect --tool iamspectre
