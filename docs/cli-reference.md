@@ -30,10 +30,11 @@ cd iamspectre && make build
 iamspectre aws [flags]
 ```
 
+<!-- WO-103@v3: document the explicit missing-region escape hatch. -->
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--profile` | | AWS profile name |
-| `--region` | SDK/config default | AWS region used for SDK endpoint resolution | <!-- WO-103@v3: document the explicit missing-region escape hatch. -->
+| `--region` | SDK/config default | AWS region used for SDK endpoint resolution |
 | `--stale-days` | `90` | Inactivity threshold (days) |
 | `--severity-min` | `low` | Minimum severity: critical, high, medium, low |
 | `--format` | `text` | Output format: text, json, sarif, spectrehub |
