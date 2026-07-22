@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -164,6 +165,17 @@ type Finding struct {
 	EvaluatedLayers map[AuthorizationLayer]LayerStatus `json:"evaluated_layers,omitempty"` // WO-20@v3: expose complete authorization-layer coverage.
 }
 
+// WO-120@v3: SourceCompleteness records source-level collection truth without entering default reports.
+type SourceCompleteness struct {
+	Source                string `json:"-"` // WO-120@v3: identify the bounded source only inside the scan pipeline.
+	Region                string `json:"-"` // WO-120@v3: bind completeness to one provider region.
+	Complete              bool   `json:"-"` // WO-120@v3: distinguish a complete empty artifact from an interrupted one.
+	Cause                 string `json:"-"` // WO-120@v3: retain the first stable incomplete cause.
+	ListedClusters        int    `json:"-"` // WO-120@v3: count unique valid clusters returned by the source.
+	ListedAssociations    int    `json:"-"` // WO-120@v3: count unique valid association summaries.
+	DescribedAssociations int    `json:"-"` // WO-120@v3: count constructor-valid descriptions only.
+}
+
 // WO-70@v4: ScanResult keeps actionable findings, diagnostics, and coverage observations distinct.
 type ScanResult struct {
 	Findings                            []Finding                `json:"findings"`
@@ -171,6 +183,7 @@ type ScanResult struct {
 	CoverageGaps                        []CoverageGapObservation `json:"coverage_gaps,omitempty"` // WO-70@v4: keep missing evidence separate from actionable findings.
 	CoverageGapDetails                  []CoverageGapDetail      `json:"-"`                       // WO-110@v5: retain opt-in role detail only inside the scan pipeline.
 	IAMPositiveEdges                    []IAMPositiveEdge        `json:"-"`                       // WO-119@v2: retain observed IAM edges only inside the scan pipeline.
+	SourceCompleteness                  []SourceCompleteness     `json:"-"`                       // WO-120@v3: retain source-level coverage only inside the scan pipeline.
 	PrincipalsScanned                   int                      `json:"principals_scanned"`
 	ObservedPrincipalIDs                map[string]struct{}      `json:"-"` // WO-89@v4: carry identities only far enough to compute cross-scanner cardinality.
 	PrincipalIdentityAccountingComplete bool                     `json:"-"` // WO-89@v4: distinguish a complete empty set from unsupported accounting.
@@ -179,11 +192,13 @@ type ScanResult struct {
 // WO-119@v2: IAMPositiveEdgeType names the closed IAM-side positive evidence vocabulary.
 type IAMPositiveEdgeType string
 
-// WO-119@v2: enumerate only the three killgate-ratified positive observation kinds.
+// WO-119@v2: enumerate only the killgate-ratified positive observation kinds.
 const (
-	IAMTrustWebIdentityObserved IAMPositiveEdgeType = "IAM_TRUST_WEB_IDENTITY_OBSERVED"
-	IAMTrustPodIdentityObserved IAMPositiveEdgeType = "IAM_TRUST_POD_IDENTITY_OBSERVED"
-	RoleActivityObserved        IAMPositiveEdgeType = "ROLE_ACTIVITY_OBSERVED"
+	IAMTrustWebIdentityObserved    IAMPositiveEdgeType = "IAM_TRUST_WEB_IDENTITY_OBSERVED"
+	IAMTrustPodIdentityObserved    IAMPositiveEdgeType = "IAM_TRUST_POD_IDENTITY_OBSERVED"
+	RoleActivityObserved           IAMPositiveEdgeType = "ROLE_ACTIVITY_OBSERVED"
+	PodIdentityAssociationObserved IAMPositiveEdgeType = "POD_IDENTITY_ASSOCIATION_OBSERVED"  // WO-120@v3: preserve one described EKS association as positive evidence.
+	PodIdentityChainTargetObserved IAMPositiveEdgeType = "POD_IDENTITY_CHAIN_TARGET_OBSERVED" // WO-120@v3: preserve an explicitly described target-role hop.
 )
 
 // WO-119@v2: IAMPositiveEdge is sealed so provider packages cannot invent absence or verdict variants.
@@ -280,6 +295,129 @@ func (iamTrustPodIdentityObservedEdge) Type() IAMPositiveEdgeType {
 
 // WO-119@v2: keep the positive-edge vocabulary closed outside this package.
 func (iamTrustPodIdentityObservedEdge) positiveIAMObservation() {}
+
+// WO-120@v3: PodIdentityAssociationDetails carries validated EKS evidence only inside the scan pipeline.
+type PodIdentityAssociationDetails struct {
+	AssociationARN string `json:"-"` // WO-120@v3: bind evidence to one described association.
+	AssociationID  string `json:"-"` // WO-120@v3: retain the provider association identity.
+	ClusterARN     string `json:"-"` // WO-120@v3: retain the partition-correct cluster identity.
+	ClusterName    string `json:"-"` // WO-120@v3: retain the list/describe scope.
+	Namespace      string `json:"-"` // WO-120@v3: retain the observed Kubernetes namespace without querying Kubernetes.
+	ServiceAccount string `json:"-"` // WO-120@v3: retain the observed service account without querying Kubernetes.
+	SourceRoleARN  string `json:"-"` // WO-120@v3: bind the association to its source IAM role.
+	TargetRoleARN  string `json:"-"` // WO-120@v3: retain only an explicitly described optional role-chain target.
+}
+
+// WO-120@v3: podIdentityAssociationObservedEdge can only hold constructor-validated evidence.
+type podIdentityAssociationObservedEdge struct {
+	iamPositiveEdgeBase                               // WO-120@v3: retain the common validated source-role identity and instant.
+	details             PodIdentityAssociationDetails // WO-120@v3: retain the complete described association evidence.
+}
+
+// WO-120@v3: NewPodIdentityAssociationObservedEdge rejects incomplete or identity-inconsistent evidence.
+func NewPodIdentityAssociationObservedEdge(
+	details PodIdentityAssociationDetails,
+	observedAt time.Time,
+) IAMPositiveEdge {
+	if !validPodIdentityDetails(details) || observedAt.IsZero() {
+		return nil
+	}
+	return podIdentityAssociationObservedEdge{
+		iamPositiveEdgeBase: iamPositiveEdgeBase{
+			roleARN: details.SourceRoleARN, roleName: roleNameFromARN(details.SourceRoleARN), observedAt: observedAt,
+		},
+		details: details,
+	}
+}
+
+// WO-120@v3: Type identifies only constructor-validated association evidence.
+func (podIdentityAssociationObservedEdge) Type() IAMPositiveEdgeType {
+	return PodIdentityAssociationObserved
+}
+
+// WO-120@v3: positiveIAMObservation keeps the positive-edge vocabulary sealed.
+func (podIdentityAssociationObservedEdge) positiveIAMObservation() {}
+
+// WO-120@v3: podIdentityChainTargetObservedEdge can only hold an explicitly described target role.
+type podIdentityChainTargetObservedEdge struct {
+	iamPositiveEdgeBase                               // WO-120@v3: retain the validated target-role identity and instant.
+	details             PodIdentityAssociationDetails // WO-120@v3: retain the association evidence behind the explicit target hop.
+}
+
+// WO-120@v3: NewPodIdentityChainTargetObservedEdge rejects absent target-role evidence.
+func NewPodIdentityChainTargetObservedEdge(
+	details PodIdentityAssociationDetails,
+	observedAt time.Time,
+) IAMPositiveEdge {
+	if !validPodIdentityDetails(details) || !validRoleARN(details.TargetRoleARN) || observedAt.IsZero() {
+		return nil
+	}
+	return podIdentityChainTargetObservedEdge{
+		iamPositiveEdgeBase: iamPositiveEdgeBase{
+			roleARN: details.TargetRoleARN, roleName: roleNameFromARN(details.TargetRoleARN), observedAt: observedAt,
+		},
+		details: details,
+	}
+}
+
+// WO-120@v3: Type identifies only constructor-validated role-chain target evidence.
+func (podIdentityChainTargetObservedEdge) Type() IAMPositiveEdgeType {
+	return PodIdentityChainTargetObserved
+}
+
+// WO-120@v3: positiveIAMObservation keeps the positive-edge vocabulary sealed.
+func (podIdentityChainTargetObservedEdge) positiveIAMObservation() {}
+
+// WO-120@v3: PodIdentityAssociationEvidence returns a value copy for either Pod Identity edge variant.
+func PodIdentityAssociationEvidence(edge IAMPositiveEdge) (PodIdentityAssociationDetails, bool) {
+	switch typed := edge.(type) {
+	case podIdentityAssociationObservedEdge:
+		return typed.details, true
+	case podIdentityChainTargetObservedEdge:
+		return typed.details, true
+	default:
+		return PodIdentityAssociationDetails{}, false
+	}
+}
+
+// WO-120@v3: validPodIdentityDetails prevents cross-region, account, or partition fabrication.
+func validPodIdentityDetails(details PodIdentityAssociationDetails) bool {
+	if details.AssociationARN == "" || details.AssociationID == "" || details.ClusterARN == "" ||
+		details.ClusterName == "" || details.Namespace == "" || details.ServiceAccount == "" ||
+		details.SourceRoleARN == "" {
+		return false
+	}
+	parts := strings.SplitN(details.AssociationARN, ":", 6)
+	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "eks" || parts[3] == "" || parts[4] == "" {
+		return false
+	}
+	if parts[5] != "podidentityassociation/"+details.ClusterName+"/"+details.AssociationID {
+		return false
+	}
+	if details.ClusterARN != strings.Join(parts[:5], ":")+":cluster/"+details.ClusterName {
+		return false
+	}
+	roleParts := strings.SplitN(details.SourceRoleARN, ":", 6)
+	return len(roleParts) == 6 && roleParts[0] == "arn" && roleParts[1] == parts[1] &&
+		roleParts[2] == "iam" && roleParts[3] == "" && roleParts[4] == parts[4] &&
+		strings.HasPrefix(roleParts[5], "role/") && len(roleParts[5]) > len("role/")
+}
+
+// WO-120@v3: validRoleARN admits only concrete IAM role resources for explicit chain targets.
+func validRoleARN(roleARN string) bool {
+	parts := strings.SplitN(roleARN, ":", 6)
+	return len(parts) == 6 && parts[0] == "arn" && parts[1] != "" && parts[2] == "iam" &&
+		parts[3] == "" && parts[4] != "" && strings.HasPrefix(parts[5], "role/") &&
+		len(parts[5]) > len("role/")
+}
+
+// WO-120@v3: roleNameFromARN derives display identity only from a validated role ARN.
+func roleNameFromARN(roleARN string) string {
+	if slash := strings.LastIndexByte(roleARN, '/'); slash >= 0 && slash+1 < len(roleARN) {
+		return roleARN[slash+1:]
+	}
+	return ""
+}
 
 // WO-119@v2: roleActivityObservedEdge can only be created with populated RoleLastUsed evidence.
 type roleActivityObservedEdge struct {
