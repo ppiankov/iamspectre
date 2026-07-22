@@ -2,12 +2,14 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	iamsvc "github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/ppiankov/iamspectre/internal/iam"
 )
@@ -439,7 +441,156 @@ func TestRoleScanner_WebIdentityMissingUsageEvidence(t *testing.T) {
 	assertRoleUsageCoverage(t, result, 2, 0, 2)
 }
 
+// WO-107@v2: missing ListRoles evidence is enriched once without weakening the absence boundary.
+func TestRoleScanner_EnrichesMissingUsageEvidence(t *testing.T) {
+	stale := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Now().UTC().AddDate(0, 0, -1)
+	tests := []struct {
+		name         string
+		getRole      func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error)
+		wantFinding  bool
+		wantCoverage bool
+	}{
+		{
+			name: "stale",
+			getRole: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+				return &iamsvc.GetRoleOutput{Role: &iamtypes.Role{RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale}}}, nil
+			},
+			wantFinding: true,
+		},
+		{
+			name: "recent",
+			getRole: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+				return &iamsvc.GetRoleOutput{Role: &iamtypes.Role{RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &recent}}}, nil
+			},
+		},
+		{
+			name: "denied",
+			getRole: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+				return nil, errors.New("access denied")
+			},
+			wantCoverage: true,
+		},
+		{
+			name: "nil role",
+			getRole: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+				return &iamsvc.GetRoleOutput{}, nil
+			},
+			wantCoverage: true,
+		},
+		{
+			name: "nil usage evidence",
+			getRole: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+				return &iamsvc.GetRoleOutput{Role: &iamtypes.Role{}}, nil
+			},
+			wantCoverage: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := iamtypes.Role{
+				RoleName: awssdk.String("candidate"),
+				Arn:      awssdk.String("arn:aws:iam::123456789012:role/candidate"),
+			}
+			mock := &mockIAM{roles: []iamtypes.Role{role}, getRoleFn: tt.getRole}
+			result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+			if err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if len(mock.getRoleCalls) != 1 || mock.getRoleCalls[0] != "candidate" {
+				t.Fatalf("GetRole calls = %#v, want [candidate]", mock.getRoleCalls)
+			}
+			finding := findFinding(result.Findings, iam.FindingUnusedRole)
+			if (finding != nil) != tt.wantFinding {
+				t.Fatalf("UNUSED_ROLE = %#v, want finding=%t", finding, tt.wantFinding)
+			}
+			if tt.wantCoverage {
+				assertRoleUsageCoverage(t, result, 1, 0, 1)
+			} else if len(result.CoverageGaps) != 0 {
+				t.Fatalf("coverage gaps = %#v, want none", result.CoverageGaps)
+			}
+		})
+	}
+}
+
+// WO-107@v2: context cancellation remains a scan error rather than missing provider evidence.
+func TestRoleScanner_GetRoleCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := &mockIAM{
+		roles: []iamtypes.Role{{RoleName: awssdk.String("candidate"), Arn: awssdk.String("arn:aws:iam::123456789012:role/candidate")}},
+		getRoleFn: func(callCtx context.Context, _ *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+			cancel()
+			return nil, callCtx.Err()
+		},
+	}
+	_, err := NewRoleScanner(mock, "123456789012").Scan(ctx, iam.ScanConfig{StaleDays: 90})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("scan error = %v, want context.Canceled", err)
+	}
+}
+
+// WO-107@v2: opted-in service-linked roles may enrich but retain restrained presentation.
+func TestRoleScanner_EnrichesIncludedServiceLinkedRole(t *testing.T) {
+	stale := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	role := iamtypes.Role{
+		RoleName: awssdk.String("AWSServiceRoleForExample"),
+		Arn:      awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/AWSServiceRoleForExample"),
+		Path:     awssdk.String("/aws-service-role/example.amazonaws.com/"),
+	}
+	mock := &mockIAM{
+		roles: []iamtypes.Role{role},
+		getRoleFn: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+			return &iamsvc.GetRoleOutput{Role: &iamtypes.Role{RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale}}}, nil
+		},
+	}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{
+		StaleDays:                 90,
+		IncludeServiceLinkedRoles: true,
+	})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	finding := findFinding(result.Findings, iam.FindingUnusedRole)
+	if finding == nil || finding.Severity != iam.SeverityLow || !strings.Contains(finding.Recommendation, "owning AWS service") {
+		t.Fatalf("finding = %#v, want low-severity service lifecycle guidance", finding)
+	}
+	if len(mock.getRoleCalls) != 1 || mock.getRoleCalls[0] != "AWSServiceRoleForExample" {
+		t.Fatalf("GetRole calls = %#v", mock.getRoleCalls)
+	}
+}
+
+// WO-107@v2: enrichment replaces only usage evidence, preserving trust-derived metadata from ListRoles.
+func TestRoleScanner_EnrichedWebIdentityRetainsListTrust(t *testing.T) {
+	stale := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	trust := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:oidc-provider/issuer.example"},"Action":"sts:AssumeRoleWithWebIdentity"}}`)
+	role := iamtypes.Role{
+		RoleName:                 awssdk.String("web-identity"),
+		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/web-identity"),
+		RoleLastUsed:             &iamtypes.RoleLastUsed{},
+		AssumeRolePolicyDocument: &trust,
+	}
+	mock := &mockIAM{
+		roles: []iamtypes.Role{role},
+		getRoleFn: func(context.Context, *iamsvc.GetRoleInput) (*iamsvc.GetRoleOutput, error) {
+			return &iamsvc.GetRoleOutput{Role: &iamtypes.Role{RoleLastUsed: &iamtypes.RoleLastUsed{LastUsedDate: &stale}}}, nil
+		},
+	}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	finding := findFinding(result.Findings, iam.FindingUnusedRole)
+	if finding == nil || finding.Metadata["trust_mechanism"] != "web_identity" {
+		t.Fatalf("finding metadata = %#v, want web_identity", finding)
+	}
+	if len(mock.getRoleCalls) != 1 || mock.getRoleCalls[0] != "web-identity" {
+		t.Fatalf("GetRole calls = %#v", mock.getRoleCalls)
+	}
+}
+
 // WO-104@v3: excluded and default-suppressed roles cannot inflate coverage denominators.
+// WO-107@v2: only the eligible role with missing list evidence may call GetRole.
 func TestRoleScanner_RoleUsageCoverageCountsEligibleRoles(t *testing.T) {
 	recent := time.Now().UTC().AddDate(0, 0, -1)
 	stale := time.Now().UTC().AddDate(0, 0, -120)
@@ -455,13 +606,17 @@ func TestRoleScanner_RoleUsageCoverageCountsEligibleRoles(t *testing.T) {
 		},
 	}
 	cfg := iam.ScanConfig{StaleDays: 90, Exclude: iam.ExcludeConfig{Principals: map[string]bool{"excluded": true}}}
-	result, err := NewRoleScanner(&mockIAM{roles: roles}, "123456789012").Scan(context.Background(), cfg)
+	mock := &mockIAM{roles: roles}
+	result, err := NewRoleScanner(mock, "123456789012").Scan(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	assertRoleUsageCoverage(t, result, 1, 2, 3)
 	if finding := findFinding(result.Findings, iam.FindingUnusedRole); finding == nil || finding.ResourceName != "stale" {
 		t.Fatalf("findings = %#v, want only stale role usage finding", result.Findings)
+	}
+	if strings.Join(mock.getRoleCalls, ",") != "unknown" {
+		t.Fatalf("GetRole calls = %#v, want only unknown", mock.getRoleCalls)
 	}
 }
 

@@ -20,6 +20,8 @@ type mockIAM struct {
 	reportErr        error
 	roles            []iamtypes.Role
 	rolesErr         error
+	getRoleFn        func(context.Context, *iam.GetRoleInput) (*iam.GetRoleOutput, error) // WO-107@v2: inject per-role evidence outcomes.
+	getRoleCalls     []string                                                             // WO-107@v2: prove enrichment request bounds.
 	policies         []iamtypes.Policy
 	policiesErr      error
 	policyVersion    *iam.GetPolicyVersionOutput
@@ -46,6 +48,24 @@ func (m *mockIAM) ListRoles(_ context.Context, _ *iam.ListRolesInput, _ ...func(
 		return nil, m.rolesErr
 	}
 	return &iam.ListRolesOutput{Roles: m.roles, IsTruncated: false}, nil
+}
+
+// WO-107@v2: mirror GetRole evidence while allowing focused failure injection.
+func (m *mockIAM) GetRole(ctx context.Context, input *iam.GetRoleInput, _ ...func(*iam.Options)) (*iam.GetRoleOutput, error) {
+	roleName := ""
+	if input != nil && input.RoleName != nil {
+		roleName = *input.RoleName
+	}
+	m.getRoleCalls = append(m.getRoleCalls, roleName)
+	if m.getRoleFn != nil {
+		return m.getRoleFn(ctx, input)
+	}
+	for i := range m.roles {
+		if m.roles[i].RoleName != nil && *m.roles[i].RoleName == roleName {
+			return &iam.GetRoleOutput{Role: &m.roles[i]}, nil
+		}
+	}
+	return &iam.GetRoleOutput{}, nil
 }
 
 func (m *mockIAM) ListPolicies(_ context.Context, _ *iam.ListPoliciesInput, _ ...func(*iam.Options)) (*iam.ListPoliciesOutput, error) {

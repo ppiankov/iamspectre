@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ const (
 	maxGraphErrorBodyBytes = 64 * 1024
 	// WO-84@v3: bound each stored field and the combined Graph-sourced diagnostic.
 	maxGraphErrorTextBytes = 4 * 1024
+	// WO-84@v5: transport diagnostics never interpolate URL-bearing or arbitrary cause text.
+	graphTransportErrorMessage = "execute Graph request failed"
 )
 
 // WO-84@v3: redact bearer credentials before retaining any Graph-sourced text.
@@ -62,6 +65,32 @@ type GraphHTTPError struct {
 	Message         string
 	RequestID       string
 	ClientRequestID string
+}
+
+// WO-84@v5: graphTransportError preserves cause matching behind a fixed safe message.
+type graphTransportError struct {
+	cause error
+}
+
+// WO-84@v5: Error cannot render the request URL carried by net/url.Error.
+func (*graphTransportError) Error() string {
+	return graphTransportErrorMessage
+}
+
+// WO-84@v5: Unwrap retains transport classification without the URL-bearing wrapper.
+func (e *graphTransportError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// WO-84@v5: retain only the underlying transport cause returned by http.Client.Do.
+func newGraphTransportError(err error) error {
+	if urlErr, ok := err.(*neturl.Error); ok {
+		return &graphTransportError{cause: urlErr.Err}
+	}
+	return &graphTransportError{cause: err}
 }
 
 // WO-84@v3: Error omits URLs, bodies, headers, and credentials from operator output.
@@ -240,6 +269,7 @@ func (g *graphClient) GetSecurityDefaults(ctx context.Context) (*SecurityDefault
 }
 
 // doRequest performs an authenticated GET request to Microsoft Graph.
+// WO-84@v5: sanitize both response and transport failures without exposing request URLs.
 func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser, error) {
 	const maxRetries = 3
 
@@ -260,7 +290,7 @@ func (g *graphClient) doRequest(ctx context.Context, url string) (io.ReadCloser,
 
 		resp, err := g.client.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("execute request: %w", err)
+			return nil, newGraphTransportError(err)
 		}
 
 		if resp.StatusCode == http.StatusOK {
