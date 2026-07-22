@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	awsscanner "github.com/ppiankov/iamspectre/internal/aws"
@@ -13,7 +14,8 @@ import (
 type awsScanFlags struct {
 	commonScanFlags
 	profile                   string
-	includeServiceLinkedRoles bool // WO-44@v2: opt in to otherwise suppressed AWS-owned-role noise.
+	region                    string // WO-103@v3: explicit CLI region wins before config and SDK defaults.
+	includeServiceLinkedRoles bool   // WO-44@v2: opt in to otherwise suppressed AWS-owned-role noise.
 }
 
 var awsFlags awsScanFlags
@@ -38,6 +40,7 @@ func init() {
 func registerAWSFlags(cmd *cobra.Command, flags *awsScanFlags) {
 	registerCommonScanFlags(cmd, &flags.commonScanFlags)
 	cmd.Flags().StringVar(&flags.profile, "profile", "", "AWS profile name")
+	cmd.Flags().StringVar(&flags.region, "region", "", "AWS region for SDK endpoint resolution") // WO-103@v3: expose the missing-region escape hatch.
 	cmd.Flags().BoolVar(&flags.includeServiceLinkedRoles, "include-service-linked-roles", false, "Include unused AWS service-linked roles")
 }
 
@@ -59,14 +62,14 @@ func runAWS(cmd *cobra.Command, _ []string) error {
 	slog.Info("Starting AWS IAM audit", "profile", prof, "stale_days", awsFlags.staleDays)
 
 	// Initialize AWS client
-	region, err := resolveAWSRegion(cfg.Regions)
+	region, err := resolveAWSRegion(awsFlags.region, cfg.Regions)
 	if err != nil {
 		return err
 	}
 
 	client, err := awsscanner.NewClient(ctx, prof, region)
 	if err != nil {
-		return enhanceError("initialize AWS client", err)
+		return enhanceAWSClientError(err)
 	}
 
 	// Build scan config
@@ -110,7 +113,12 @@ func withScanTimeout(
 }
 
 // WO-13@v2: global IAM scans accept at most one distinct SDK region.
-func resolveAWSRegion(regions []string) (string, error) {
+// WO-103@v3: explicit CLI selection wins before config validation and SDK fallback.
+func resolveAWSRegion(flagRegion string, regions []string) (string, error) {
+	if flagRegion != "" {
+		return flagRegion, nil
+	}
+
 	resolved := ""
 	for _, region := range regions {
 		if region == "" || region == resolved {
@@ -122,6 +130,14 @@ func resolveAWSRegion(regions []string) (string, error) {
 		resolved = region
 	}
 	return resolved, nil
+}
+
+// WO-103@v3: turn only the SDK missing-region failure into an actionable command error.
+func enhanceAWSClientError(err error) error {
+	if !strings.Contains(strings.ToLower(err.Error()), "missing region") {
+		return enhanceError("initialize AWS client", err)
+	}
+	return fmt.Errorf("initialize AWS client: AWS region unavailable; set --region, AWS_REGION, or config regions: %w", err)
 }
 
 func computeTargetHash(profile string) string {
