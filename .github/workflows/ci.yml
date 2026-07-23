@@ -1,5 +1,9 @@
 name: CI
 
+permissions:
+  contents: write
+  actions: write
+
 on:
   push:
     branches: [ main ]
@@ -86,3 +90,52 @@ jobs:
         with:
           version: latest
           args: --timeout=5m
+
+  auto-tag:
+    name: Auto-tag version bumps
+    runs-on: ubuntu-latest
+    needs: [build, test, lint]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check for version bump commit
+        id: check
+        run: |
+          MSG=$(git log -1 --format='%s')
+          if echo "$MSG" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+$'; then
+            VERSION=$(echo "$MSG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "should_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        id: tag
+        if: steps.check.outputs.should_tag == 'true'
+        env:
+          # WO-133@v2: built-in token suppresses recursive push-triggered release paths.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.check.outputs.tag }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "Tag ${TAG} already exists on remote — skipping"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git tag "$TAG"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git push origin "$TAG"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # WO-133@v2: if this job owns the tag push, it is the one release trigger for that tag.
+      - name: Trigger release workflow
+        if: steps.tag.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh workflow run release.yml --repo "${{ github.repository }}" --ref main -f tag="$TAG"
