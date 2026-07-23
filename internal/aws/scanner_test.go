@@ -119,12 +119,29 @@ func TestCollectPodIdentityRejectsNilResult(t *testing.T) {
 }
 
 // WO-126@v2: a missing resolved region fails before any regional collection attempt.
-func TestCollectPodIdentityReturnsConstructionError(t *testing.T) {
+func TestCollectPodIdentityReturnsSourceConstructionErrorAsCoverageGap(t *testing.T) {
 	scanner := NewAWSScanner(NewClientWithSTS(awssdk.Config{}, nil), iam.ScanConfig{})
+	result := &iam.ScanResult{}
 
-	err := scanner.collectPodIdentity(context.Background(), &iam.ScanResult{})
-	if err == nil || err.Error() != "pod identity region is required" {
+	err := scanner.collectPodIdentity(context.Background(), result)
+	if err != nil {
 		t.Fatalf("collect pod identity error = %v", err)
+	}
+	if len(result.CoverageGaps) != 1 {
+		t.Fatalf("coverage gaps = %#v", result.CoverageGaps)
+	}
+	gap := result.CoverageGaps[0]
+	if gap.Capability != podIdentityCapability || gap.Cause != podIdentitySourceUnconstructable ||
+		gap.Scope != awsRegionScopePrefix+podIdentityRegionUnknown {
+		t.Fatalf("coverage gap identity = %#v", gap)
+	}
+	if len(result.SourceCompleteness) != 1 {
+		t.Fatalf("source completeness = %#v", result.SourceCompleteness)
+	}
+	completeness := result.SourceCompleteness[0]
+	if completeness.Cause != podIdentitySourceUnconstructable || completeness.Region != podIdentityRegionUnknown ||
+		completeness.Source != "eks_pod_identity" || completeness.Complete {
+		t.Fatalf("source completeness = %#v", completeness)
 	}
 }
 
@@ -136,6 +153,41 @@ func TestCollectPodIdentityReturnsSourceError(t *testing.T) {
 	err := scanner.collectPodIdentity(context.Background(), &iam.ScanResult{})
 	if !errors.Is(err, want) {
 		t.Fatalf("collect pod identity error = %v, want %v", err, want)
+	}
+}
+
+// WO-132@v3: source construction failure degrades the AWS scan to coverage-only state.
+func TestAWSScannerScanAllDegradesOnPodIdentitySourceConstructionFailure(t *testing.T) {
+	iamClient := &mockIAM{
+		generateState:   iamtypes.ReportStateTypeComplete,
+		reportContent:   []byte(testCredentialReportCSV),
+		reportGenerated: awssdk.Time(time.Date(2010, 1, 1, 0, 0, 0, 0, time.UTC)),
+		roles: []iamtypes.Role{{
+			RoleName: awssdk.String("stale-role"),
+			Arn:      awssdk.String("arn:aws:iam::123456789012:role/stale-role"),
+			RoleLastUsed: &iamtypes.RoleLastUsed{
+				LastUsedDate: awssdk.Time(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)),
+				Region:       awssdk.String("us-east-1"),
+			},
+		}},
+	}
+	client := NewClientWithSTS(awssdk.Config{}, &mockSTS{accountID: "123456789012"})
+	scanner := NewAWSScannerWithSources(client, iamClient, &stubPodIdentityCollector{}, iam.ScanConfig{StaleDays: 90})
+	scanner.podIdentitySourceError = errors.New("pod identity region is required")
+
+	result, err := scanner.ScanAll(context.Background())
+	if err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+	if len(result.Findings) == 0 {
+		t.Fatalf("findings = %#v", result.Findings)
+	}
+	if len(result.CoverageGaps) != 1 {
+		t.Fatalf("coverage gaps = %#v", result.CoverageGaps)
+	}
+	if gap := result.CoverageGaps[0]; gap.Capability != podIdentityCapability || gap.Cause != podIdentitySourceUnconstructable ||
+		gap.Scope != awsRegionScopePrefix+podIdentityRegionUnknown {
+		t.Fatalf("coverage gap identity = %#v", gap)
 	}
 }
 
