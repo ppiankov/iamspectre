@@ -171,7 +171,7 @@ func TestReleaseGoreleaserSectionOrder(t *testing.T) {
 	if brewsIndex == -1 {
 		t.Fatalf(".goreleaser.yml missing brews block")
 	}
-	if !(archivesIndex < checksumIndex && checksumIndex < brewsIndex) {
+	if archivesIndex >= checksumIndex || checksumIndex >= brewsIndex {
 		t.Fatalf(".goreleaser.yml expected archives/checksum before brews, got indices %d/%d/%d", archivesIndex, checksumIndex, brewsIndex)
 	}
 }
