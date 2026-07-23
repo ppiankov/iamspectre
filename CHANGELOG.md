@@ -5,6 +5,22 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-23
+
+### Added
+
+- AWS EKS Pod Identity scanning: `iamspectre aws` now enumerates EKS Pod Identity associations across the resolved region (`eks:ListClusters` → `eks:ListPodIdentityAssociations` → `eks:DescribePodIdentityAssociation`) and records them as observed IAM-role trust evidence. Incomplete or throttled collection is reported as a bounded coverage gap (capability `aws_eks_pod_identity_associations`), never as a false negative
+- `iamspectre init` generated IAM policy now includes the three read-only EKS actions required for Pod Identity scanning (`eks:ListClusters`, `eks:ListPodIdentityAssociations`, `eks:DescribePodIdentityAssociation`); the CLI-reference permission list is kept in exact sync with the generated policy by a contract test
+
+### Changed
+
+- The AWS scan now carries an internal positive-evidence plane (observed IAM trust paths, role activity, and Pod Identity associations) used for cross-tool correlation; default findings, severities, and report output are unchanged
+
+### Fixed
+
+- A missing or unresolved AWS region no longer aborts the entire IAM audit: EKS Pod Identity collection degrades to a coverage gap while account-global IAM findings (users, roles, policies) are still reported
+- EKS Pod Identity Describe throttling or access-denial reduces reported coverage for the affected region instead of failing the scan
+
 ## [0.5.3] - 2026-07-22
 
 ### Fixed
