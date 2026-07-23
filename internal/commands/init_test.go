@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -11,6 +13,45 @@ import (
 func TestSampleConfigIncludesServiceLinkedRoleOption(t *testing.T) {
 	if !strings.Contains(sampleConfig, "include_service_linked_roles: false") {
 		t.Fatal("sample config omits include_service_linked_roles")
+	}
+}
+
+// WO-127@v3: pin the exact read-only EKS boundary needed by the Pod Identity source.
+func TestSampleAWSIAMPolicyEKSReadBoundary(t *testing.T) {
+	var policy struct {
+		Statement []struct {
+			Effect string
+			Action []string
+		}
+	}
+	if err := json.Unmarshal([]byte(sampleAWSIAMPolicy), &policy); err != nil {
+		t.Fatalf("parse sample AWS policy: %v", err)
+	}
+
+	var eksActions []string
+	for _, statement := range policy.Statement {
+		if statement.Effect != "Allow" {
+			continue
+		}
+		for _, action := range statement.Action {
+			if strings.EqualFold(strings.SplitN(action, ":", 2)[0], "eks") {
+				eksActions = append(eksActions, action)
+			}
+		}
+	}
+	sort.Strings(eksActions)
+	want := []string{
+		"eks:DescribePodIdentityAssociation",
+		"eks:ListClusters",
+		"eks:ListPodIdentityAssociations",
+	}
+	if len(eksActions) != len(want) {
+		t.Fatalf("EKS actions = %v, want %v", eksActions, want)
+	}
+	for index := range want {
+		if eksActions[index] != want[index] {
+			t.Fatalf("EKS actions = %v, want %v", eksActions, want)
+		}
 	}
 }
 

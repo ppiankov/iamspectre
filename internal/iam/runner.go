@@ -58,6 +58,8 @@ func mergeScanResult(mu *sync.Mutex, combined *ScanResult, observedPrincipalIDs 
 	combined.Errors = append(combined.Errors, result.Errors...)
 	combined.CoverageGaps = append(combined.CoverageGaps, result.CoverageGaps...)                   // WO-70@v4: preserve the independent coverage plane.
 	combined.CoverageGapDetails = append(combined.CoverageGapDetails, result.CoverageGapDetails...) // WO-110@v5: preserve private detail for dependent in-process enrichment.
+	combined.IAMPositiveEdges = append(combined.IAMPositiveEdges, result.IAMPositiveEdges...)       // WO-130@v2: preserve private positive evidence across scanner aggregation.
+	combined.SourceCompleteness = append(combined.SourceCompleteness, result.SourceCompleteness...) // WO-130@v2: preserve source truth alongside partial scanner outcomes.
 	combined.PrincipalsScanned += result.PrincipalsScanned
 	// WO-89@v4: the union is authoritative only when every participant proves complete accounting.
 	if !result.PrincipalIdentityAccountingComplete || len(result.ObservedPrincipalIDs) != result.PrincipalsScanned {

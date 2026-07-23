@@ -73,6 +73,30 @@ func TestReportReporter_EmptyFindingsPreservesPartialAuditEvidence(t *testing.T)
 	}
 }
 
+// WO-128@v2: Markdown coverage never fabricates an affected finding or consequence for source failures.
+func TestReportReporter_SourceCoverageGap(t *testing.T) {
+	data := reportFixture()
+	data.Findings = nil
+	data.Summary.TotalFindings = 0
+	data.Coverage = CoverageManifest{Gaps: []CoverageGap{{
+		Capability: "aws_eks_pod_identity_associations",
+		Cause:      "access_denied",
+		Scope:      "aws-region:us-east-1",
+	}}}
+
+	var output bytes.Buffer
+	if err := (&ReportReporter{Writer: &output}).Generate(data); err != nil {
+		t.Fatalf("generate report: %v", err)
+	}
+	const want = "- aws\\_eks\\_pod\\_identity\\_associations [aws-region:us-east-1]: access\\_denied; affected=none; evaluable=0/0"
+	if !strings.Contains(output.String(), want) {
+		t.Fatalf("report missing source gap %q:\n%s", want, output.String())
+	}
+	if strings.Contains(output.String(), "maximum consequence=") {
+		t.Fatalf("report fabricated source consequence:\n%s", output.String())
+	}
+}
+
 // WO-102@v3: output failures remain visible to the shared command boundary.
 func TestReportReporter_WriterError(t *testing.T) {
 	want := errors.New("write failed")

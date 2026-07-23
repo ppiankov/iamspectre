@@ -58,13 +58,13 @@ type CoverageGap struct {
 	Capability        string                 `json:"capability"`
 	Cause             string                 `json:"cause"`
 	Scope             string                 `json:"scope"`
-	AffectedFindings  []AffectedFindingClass `json:"affected_findings"`
+	AffectedFindings  []AffectedFindingClass `json:"affected_findings,omitempty"` // WO-128@v2: source gaps have no honest finding class to serialize.
 	EvaluableCount    int                    `json:"evaluable_count"`
 	TotalCount        int                    `json:"total_count"`
 	OldestEvidence    *time.Time             `json:"oldest_evidence,omitempty"`
 	ObservationWindow string                 `json:"observation_window,omitempty"`
 	FeatureStage      string                 `json:"feature_stage,omitempty"`
-	MaxConsequence    iam.Severity           `json:"max_consequence"`
+	MaxConsequence    iam.Severity           `json:"max_consequence,omitempty"` // WO-128@v2: omit consequence when the source failed before evaluation.
 }
 
 // WO-70@v4: AffectedFindingClass retains the unresolved class count explicitly.

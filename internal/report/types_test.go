@@ -750,3 +750,35 @@ func TestReporters_CoverageManifestPlane(t *testing.T) {
 		t.Fatalf("SARIF coverage plane = %#v", sarif.Runs[0])
 	}
 }
+
+// WO-128@v2: JSON and SARIF omit finding-only fields for source-level coverage gaps.
+func TestReporters_SourceCoverageManifestPlane(t *testing.T) {
+	data := testData()
+	data.Findings = nil
+	data.Summary.TotalFindings = 0
+	data.Coverage = CoverageManifest{Gaps: []CoverageGap{{
+		Capability: "aws_eks_pod_identity_associations",
+		Cause:      "access_denied",
+		Scope:      "aws-region:us-east-1",
+	}}}
+
+	var jsonBuffer bytes.Buffer
+	if err := (&JSONReporter{Writer: &jsonBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{`"affected_findings"`, `"max_consequence"`} {
+		if strings.Contains(jsonBuffer.String(), unwanted) {
+			t.Fatalf("JSON fabricated source field %s: %s", unwanted, jsonBuffer.String())
+		}
+	}
+
+	var sarifBuffer bytes.Buffer
+	if err := (&SARIFReporter{Writer: &sarifBuffer}).Generate(data); err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{`"affected_findings"`, `"max_consequence"`} {
+		if strings.Contains(sarifBuffer.String(), unwanted) {
+			t.Fatalf("SARIF fabricated source field %s: %s", unwanted, sarifBuffer.String())
+		}
+	}
+}

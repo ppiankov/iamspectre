@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 // WO-22@v3: enumerate the exact actions emitted by the initialization template.
 // WO-113@v3: include the read-only role enrichment prerequisite.
 var expectedInitAWSActions = []string{
+	"eks:DescribePodIdentityAssociation", "eks:ListClusters", "eks:ListPodIdentityAssociations", // WO-127@v3: pin the complete Pod Identity read boundary.
 	"iam:GenerateCredentialReport", "iam:GetCredentialReport", "iam:GetPolicy",
 	"iam:GetPolicyVersion", "iam:GetRole", "iam:ListAttachedRolePolicies", "iam:ListAttachedUserPolicies",
 	"iam:ListPolicies", "iam:ListRoles", "iam:ListUsers", "sts:GetCallerIdentity",
@@ -23,17 +25,20 @@ type awsActionEvidence struct {
 
 // WO-23@v2: bind every generated AWS permission to runtime evidence or an explicit review decision.
 var awsPolicyActionEvidence = map[string]awsActionEvidence{
-	"iam:GenerateCredentialReport": {productionSite: "internal/aws/credential_report.go:48 FetchCredentialReport", decision: "direct"},
-	"iam:GetCredentialReport":      {productionSite: "internal/aws/credential_report.go:64 FetchCredentialReport", decision: "direct"},
-	"iam:GetPolicy":                {decision: "unjustified"},
-	"iam:GetPolicyVersion":         {productionSite: "internal/aws/policy.go:75 PolicyScanner.checkWildcardPolicy", decision: "direct"},
-	"iam:GetRole":                  {productionSite: "internal/aws/role.go RoleScanner.resolveRoleLastUsed", decision: "direct"}, // WO-113@v3: generated credentials must cover runtime role enrichment.
-	"iam:ListAttachedRolePolicies": {decision: "unjustified"},
-	"iam:ListAttachedUserPolicies": {decision: "unjustified"},
-	"iam:ListPolicies":             {productionSite: "internal/aws/policy.go:126 PolicyScanner.listPolicies", decision: "direct"},
-	"iam:ListRoles":                {productionSite: "internal/aws/role.go:179 RoleScanner.listRoles", decision: "direct"},
-	"iam:ListUsers":                {decision: "unjustified"},
-	"sts:GetCallerIdentity":        {productionSite: "internal/aws/client.go:63 Client.GetAccountID", decision: "direct"},
+	"eks:DescribePodIdentityAssociation": {productionSite: "internal/aws/podidentity.go PodIdentitySource.describe", decision: "direct"},         // WO-127@v3: bind generated access to the reviewed Describe call.
+	"eks:ListClusters":                   {productionSite: "internal/aws/podidentity.go PodIdentitySource.listClusters", decision: "direct"},     // WO-127@v3: bind generated access to regional cluster discovery.
+	"eks:ListPodIdentityAssociations":    {productionSite: "internal/aws/podidentity.go PodIdentitySource.listAssociations", decision: "direct"}, // WO-127@v3: bind generated access to association enumeration.
+	"iam:GenerateCredentialReport":       {productionSite: "internal/aws/credential_report.go:48 FetchCredentialReport", decision: "direct"},
+	"iam:GetCredentialReport":            {productionSite: "internal/aws/credential_report.go:64 FetchCredentialReport", decision: "direct"},
+	"iam:GetPolicy":                      {decision: "unjustified"},
+	"iam:GetPolicyVersion":               {productionSite: "internal/aws/policy.go:75 PolicyScanner.checkWildcardPolicy", decision: "direct"},
+	"iam:GetRole":                        {productionSite: "internal/aws/role.go RoleScanner.resolveRoleLastUsed", decision: "direct"}, // WO-113@v3: generated credentials must cover runtime role enrichment.
+	"iam:ListAttachedRolePolicies":       {decision: "unjustified"},
+	"iam:ListAttachedUserPolicies":       {decision: "unjustified"},
+	"iam:ListPolicies":                   {productionSite: "internal/aws/policy.go:126 PolicyScanner.listPolicies", decision: "direct"},
+	"iam:ListRoles":                      {productionSite: "internal/aws/role.go:179 RoleScanner.listRoles", decision: "direct"},
+	"iam:ListUsers":                      {decision: "unjustified"},
+	"sts:GetCallerIdentity":              {productionSite: "internal/aws/client.go:63 Client.GetAccountID", decision: "direct"},
 }
 
 // WO-22@v3: keep generated credentials bounded to the reviewed read-only action set.
@@ -70,13 +75,16 @@ func TestInitAWSPermissionBoundary(t *testing.T) {
 // WO-23@v2: fail closed when the generated policy and its runtime evidence drift apart.
 func TestInitAWSActionEvidence(t *testing.T) {
 	expectedDirectSites := map[string]string{
-		"iam:GenerateCredentialReport": "internal/aws/credential_report.go:48 FetchCredentialReport",
-		"iam:GetCredentialReport":      "internal/aws/credential_report.go:64 FetchCredentialReport",
-		"iam:GetPolicyVersion":         "internal/aws/policy.go:75 PolicyScanner.checkWildcardPolicy",
-		"iam:GetRole":                  "internal/aws/role.go RoleScanner.resolveRoleLastUsed",
-		"iam:ListPolicies":             "internal/aws/policy.go:126 PolicyScanner.listPolicies",
-		"iam:ListRoles":                "internal/aws/role.go:179 RoleScanner.listRoles",
-		"sts:GetCallerIdentity":        "internal/aws/client.go:63 Client.GetAccountID",
+		"eks:DescribePodIdentityAssociation": "internal/aws/podidentity.go PodIdentitySource.describe",
+		"eks:ListClusters":                   "internal/aws/podidentity.go PodIdentitySource.listClusters",
+		"eks:ListPodIdentityAssociations":    "internal/aws/podidentity.go PodIdentitySource.listAssociations",
+		"iam:GenerateCredentialReport":       "internal/aws/credential_report.go:48 FetchCredentialReport",
+		"iam:GetCredentialReport":            "internal/aws/credential_report.go:64 FetchCredentialReport",
+		"iam:GetPolicyVersion":               "internal/aws/policy.go:75 PolicyScanner.checkWildcardPolicy",
+		"iam:GetRole":                        "internal/aws/role.go RoleScanner.resolveRoleLastUsed",
+		"iam:ListPolicies":                   "internal/aws/policy.go:126 PolicyScanner.listPolicies",
+		"iam:ListRoles":                      "internal/aws/role.go:179 RoleScanner.listRoles",
+		"sts:GetCallerIdentity":              "internal/aws/client.go:63 Client.GetAccountID",
 	}
 	expectedUnjustified := map[string]bool{
 		"iam:GetPolicy": true, "iam:ListAttachedRolePolicies": true,
@@ -121,6 +129,66 @@ func TestInitAWSActionEvidence(t *testing.T) {
 	for action := range awsPolicyActionEvidence {
 		if _, ok := generated[action]; !ok {
 			t.Errorf("stale evidence for action %q", action)
+		}
+	}
+}
+
+// WO-129@v2: bind the public AWS permission reference to the exact generated action set.
+func TestInitAWSDocumentedActionsMatchGeneratedPolicy(t *testing.T) {
+	document, err := os.ReadFile("../../docs/cli-reference.md")
+	if err != nil {
+		t.Fatalf("read CLI reference: %v", err)
+	}
+	const permissionsHeading = "## IAM permissions"
+	const awsHeading = "### AWS\n"
+	const gcpHeading = "\n### GCP"
+	permissions := strings.Index(string(document), permissionsHeading)
+	if permissions < 0 {
+		t.Fatal("CLI reference omits IAM permissions heading")
+	}
+	permissionSection := string(document)[permissions+len(permissionsHeading):]
+	start := strings.Index(permissionSection, awsHeading)
+	if start < 0 {
+		t.Fatal("CLI reference omits AWS permission heading")
+	}
+	section := permissionSection[start+len(awsHeading):]
+	end := strings.Index(section, gcpHeading)
+	if end < 0 {
+		t.Fatal("CLI reference omits GCP heading after AWS permissions")
+	}
+	section = section[:end]
+
+	var documented []string
+	inline := strings.Split(section, "`")
+	for index := 1; index < len(inline); index += 2 {
+		documented = append(documented, inline[index])
+	}
+	sort.Strings(documented)
+	for index := 1; index < len(documented); index++ {
+		if documented[index] == documented[index-1] {
+			t.Fatalf("duplicate documented AWS action %q", documented[index])
+		}
+	}
+
+	var policy struct {
+		Statement []struct {
+			Action []string
+		}
+	}
+	if err := json.Unmarshal([]byte(sampleAWSIAMPolicy), &policy); err != nil {
+		t.Fatalf("parse sample policy: %v", err)
+	}
+	var generated []string
+	for _, statement := range policy.Statement {
+		generated = append(generated, statement.Action...)
+	}
+	sort.Strings(generated)
+	if len(documented) != len(generated) {
+		t.Fatalf("documented actions = %v, generated actions = %v", documented, generated)
+	}
+	for index := range generated {
+		if documented[index] != generated[index] {
+			t.Fatalf("documented actions = %v, generated actions = %v", documented, generated)
 		}
 	}
 }

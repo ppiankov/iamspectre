@@ -63,3 +63,27 @@ func TestBuildCoverageManifestEmpty(t *testing.T) {
 		t.Fatalf("empty manifest = %#v", manifest)
 	}
 }
+
+// WO-128@v2: source-level gaps must remain representable without inventing a finding class.
+func TestBuildCoverageManifestSourceGap(t *testing.T) {
+	manifest := BuildCoverageManifest([]iam.CoverageGapObservation{{
+		Capability: "aws_eks_pod_identity_associations",
+		Cause:      "access_denied",
+		Scope:      "aws-region:us-east-1",
+	}})
+
+	if len(manifest.Gaps) != 1 || manifest.UniqueMissingCapabilities != 1 {
+		t.Fatalf("source manifest = %#v", manifest)
+	}
+	gap := manifest.Gaps[0]
+	if gap.Capability != "aws_eks_pod_identity_associations" || gap.Cause != "access_denied" ||
+		gap.Scope != "aws-region:us-east-1" {
+		t.Fatalf("source gap identity = %#v", gap)
+	}
+	if len(gap.AffectedFindings) != 0 {
+		t.Fatalf("source gap fabricated affected findings: %#v", gap.AffectedFindings)
+	}
+	if gap.MaxConsequence != "" {
+		t.Fatalf("source gap fabricated max consequence: %q", gap.MaxConsequence)
+	}
+}
