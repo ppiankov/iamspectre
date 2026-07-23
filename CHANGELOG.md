@@ -5,6 +5,14 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-07-23
+
+### Fixed
+
+- Release workflows now guard against duplicate tag runs with tag-normalized concurrency and built-in-token single release dispatch from CI
+- Release now hard-fails when the checked-out `CHANGELOG.md` lacks a `## [<tag>]` section before publishing assets
+- Added contract tests under `internal/release/workflow_contract_test.go` for release trigger shape, dispatch flow, changelog presence, and asset/formula sequencing
+
 ## [0.6.0] - 2026-07-23
 
 ### Added

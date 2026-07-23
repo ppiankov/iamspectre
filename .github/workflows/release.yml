@@ -4,29 +4,86 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g., v0.6.0)"
+        required: true
 
 permissions:
   contents: write
   packages: write
 
+# WO-133@v2: keep one release run per tag across push and workflow_dispatch invocation.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  resolve:
+    name: Resolve tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.tag.outputs.ref }}
+    steps:
+      - name: Resolve tag and ref
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: Test before release
+    needs: resolve
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
       - run: make test
 
-  release:
-    name: Release
-    needs: test
+  validate-changelog:
+    name: Validate changelog entry
+    needs: resolve
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Require CHANGELOG entry for this release
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          # WO-133@v2: fail before signing and publishing if changelog is missing for the release tag.
+          VERSION="${RELEASE_TAG#v}"
+          if [ -z "${RELEASE_TAG}" ] || [ "${VERSION}" = "${RELEASE_TAG}" ]; then
+            echo "::error::Release tag must use the v<semver> format"
+            exit 1
+          fi
+          if grep -q "^## \\[${VERSION}\\] - " CHANGELOG.md; then
+            echo "CHANGELOG entry found for ${VERSION}"
+          else
+            echo "::error::CHANGELOG missing ## [${VERSION}] entry"
+            exit 1
+          fi
+
+  release:
+    name: Release
+    needs: [test, validate-changelog, resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-go@v5
