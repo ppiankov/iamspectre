@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	podIdentityCapability          = "aws_eks_pod_identity_associations" // WO-126@v2: identify regional Pod Identity coverage independently.
-	podIdentityEvidenceUnavailable = "evidence_unavailable"              // WO-126@v2: preserve a stable fallback for malformed incomplete artifacts.
-	awsRegionScopePrefix           = "aws-region:"                       // WO-126@v2: bind every Pod Identity gap to its regional boundary.
+	podIdentityCapability            = "aws_eks_pod_identity_associations" // WO-126@v2: identify regional Pod Identity coverage independently.
+	podIdentityEvidenceUnavailable   = "evidence_unavailable"              // WO-126@v2: preserve a stable fallback for malformed incomplete artifacts.
+	podIdentitySourceUnconstructable = "source_unconstructable"            // WO-132: classify scanner-layer source construction failures.
+	podIdentityRegionUnknown         = "unknown"                           // WO-132: retain a deterministic scope when region is not known.
+	awsRegionScopePrefix             = "aws-region:"                       // WO-126@v2: bind every Pod Identity gap to its regional boundary.
 )
 
 // WO-126@v2: PodIdentityCollector keeps regional EKS collection mockable at the orchestration boundary.
@@ -76,10 +78,6 @@ func newAWSScanner(client *Client, iamClient IAMAPI, scanCfg iam.ScanConfig) *AW
 // ScanAll runs all AWS IAM scanners and returns combined results.
 // WO-126@v2: extend the normal AWS scan with bounded regional Pod Identity evidence.
 func (s *AWSScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
-	if s.podIdentitySourceError != nil {
-		return nil, fmt.Errorf("initialize pod identity source: %w", s.podIdentitySourceError)
-	}
-
 	// Get account ID for cross-account trust detection
 	accountID, err := s.client.GetAccountID(ctx)
 	if err != nil {
@@ -116,7 +114,27 @@ func (s *AWSScanner) ScanAll(ctx context.Context) (*iam.ScanResult, error) {
 // WO-126@v2: append positive regional evidence and translate incomplete collection into the coverage plane.
 func (s *AWSScanner) collectPodIdentity(ctx context.Context, result *iam.ScanResult) error {
 	if s.podIdentitySourceError != nil {
-		return s.podIdentitySourceError
+		region := podIdentityRegionUnknown
+		if s.client != nil {
+			region = s.client.Config().Region
+		}
+		if region == "" {
+			region = podIdentityRegionUnknown
+		}
+		result.SourceCompleteness = append(result.SourceCompleteness, iam.SourceCompleteness{
+			Source:                "eks_pod_identity",
+			Region:                region,
+			Complete:              false,
+			Cause:                 podIdentitySourceUnconstructable,
+			DescribedAssociations: 0,
+		})
+		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
+			Capability:     podIdentityCapability,
+			Cause:          podIdentitySourceUnconstructable,
+			Scope:          awsRegionScopePrefix + region,
+			MaxConsequence: iam.SeverityMedium,
+		})
+		return nil
 	}
 	if s.podIdentitySource == nil {
 		return errors.New("pod identity source is required")
