@@ -129,6 +129,7 @@ const sampleAzureGraphPermissions = `[
 `
 
 // WO-113@v3: generated credentials include the read-only role enrichment prerequisite.
+// WO-127@v3: generated credentials cover the three read-only regional Pod Identity calls.
 const sampleAWSIAMPolicy = `{
   "Version": "2012-10-17",
   "Statement": [
@@ -136,6 +137,9 @@ const sampleAWSIAMPolicy = `{
       "Sid": "IamSpectreReadOnly",
       "Effect": "Allow",
       "Action": [
+        "eks:DescribePodIdentityAssociation",
+        "eks:ListClusters",
+        "eks:ListPodIdentityAssociations",
         "iam:GenerateCredentialReport",
         "iam:GetCredentialReport",
         "iam:ListUsers",

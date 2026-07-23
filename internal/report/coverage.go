@@ -22,7 +22,8 @@ type coverageAccumulator struct {
 func BuildCoverageManifest(observations []iam.CoverageGapObservation) CoverageManifest {
 	merged := make(map[coverageKey]*coverageAccumulator)
 	for _, observation := range observations {
-		if observation.Capability == "" || observation.Cause == "" || observation.Scope == "" || observation.FindingID == "" {
+		// WO-128@v2: capability identity is sufficient for honest source-level coverage without a finding class.
+		if observation.Capability == "" || observation.Cause == "" || observation.Scope == "" {
 			continue
 		}
 		key := coverageKey{capability: observation.Capability, cause: observation.Cause, scope: observation.Scope}
@@ -75,7 +76,10 @@ func BuildCoverageManifest(observations []iam.CoverageGapObservation) CoverageMa
 
 // WO-70@v4: merge counts and bounded evidence using order-independent rules.
 func mergeCoverageObservation(accumulator *coverageAccumulator, observation iam.CoverageGapObservation) {
-	accumulator.counts[observation.FindingID] += nonNegative(observation.AffectedCount)
+	if observation.FindingID != "" {
+		// WO-128@v2: source-level gaps remain valid without fabricating an affected finding class.
+		accumulator.counts[observation.FindingID] += nonNegative(observation.AffectedCount)
+	}
 	accumulator.gap.EvaluableCount += nonNegative(observation.EvaluableCount)
 	accumulator.gap.TotalCount += nonNegative(observation.TotalCount)
 	accumulator.gap.ObservationWindow = stableNonEmpty(accumulator.gap.ObservationWindow, observation.ObservationWindow)

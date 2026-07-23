@@ -66,19 +66,26 @@ func TestRunScannersAggregatesAndContinues(t *testing.T) {
 
 // WO-87: a scanner error must not erase independently acquired evidence.
 func TestRunScannersPreservesResultReturnedWithError(t *testing.T) {
+	edge := NewRoleActivityObservedEdge(
+		"arn:aws:iam::123456789012:role/reader", "reader",
+		time.Unix(1_700_000_000, 0).UTC(), "us-east-1", time.Unix(1_700_000_100, 0).UTC(),
+	)
 	result, err := RunScanners(context.Background(), []Scanner{
 		runnerScanner{typeID: ResourceAzureUser, result: &ScanResult{
 			Findings:           []Finding{{ID: FindingNoMFA}},
 			Errors:             []string{"security defaults: denied"},
 			CoverageGaps:       []CoverageGapObservation{{Capability: "activity", FindingID: FindingStaleUser}},
 			CoverageGapDetails: []CoverageGapDetail{{Capability: "activity", ResourceName: "private-user"}}, // WO-110@v5: error outcomes retain acquired private detail.
+			IAMPositiveEdges:   []IAMPositiveEdge{edge},                                                     // WO-130@v2: error outcomes retain acquired positive evidence.
+			SourceCompleteness: []SourceCompleteness{{Source: "role_activity", Complete: false}},            // WO-130@v2: error outcomes retain source truth.
 			PrincipalsScanned:  2,
 		}, err: errors.New("fetch users: denied")},
 	}, ScanConfig{})
 	if err != nil {
 		t.Fatalf("RunScanners: %v", err)
 	}
-	if len(result.Findings) != 1 || len(result.CoverageGaps) != 1 || len(result.CoverageGapDetails) != 1 || result.PrincipalsScanned != 2 {
+	if len(result.Findings) != 1 || len(result.CoverageGaps) != 1 || len(result.CoverageGapDetails) != 1 ||
+		len(result.IAMPositiveEdges) != 1 || len(result.SourceCompleteness) != 1 || result.PrincipalsScanned != 2 {
 		t.Fatalf("result-plus-error evidence was lost: %#v", result)
 	}
 	joined := strings.Join(result.Errors, "|")
@@ -86,6 +93,49 @@ func TestRunScannersPreservesResultReturnedWithError(t *testing.T) {
 		if strings.Count(joined, want) != 1 {
 			t.Fatalf("errors %q contain %q %d times, want once", joined, want, strings.Count(joined, want))
 		}
+	}
+}
+
+// WO-130@v2: multiple scanners append private evidence planes instead of overwriting one another.
+func TestRunScannersPreservesPrivateEvidencePlanes(t *testing.T) {
+	observedAt := time.Unix(1_700_000_100, 0).UTC()
+	firstEdge := NewRoleActivityObservedEdge(
+		"arn:aws:iam::123456789012:role/first", "first",
+		observedAt.Add(-time.Hour), "us-east-1", observedAt,
+	)
+	secondEdge := NewRoleActivityObservedEdge(
+		"arn:aws:iam::123456789012:role/second", "second",
+		observedAt.Add(-2*time.Hour), "us-west-2", observedAt,
+	)
+	result, err := RunScanners(context.Background(), []Scanner{
+		runnerScanner{typeID: ResourceIAMRole, result: &ScanResult{
+			IAMPositiveEdges:   []IAMPositiveEdge{firstEdge},
+			SourceCompleteness: []SourceCompleteness{{Source: "first", Region: "us-east-1", Complete: true}},
+		}},
+		runnerScanner{typeID: ResourceIAMBinding, result: &ScanResult{
+			IAMPositiveEdges:   []IAMPositiveEdge{secondEdge},
+			SourceCompleteness: []SourceCompleteness{{Source: "second", Region: "us-west-2", Complete: false, Cause: "denied"}},
+		}},
+	}, ScanConfig{})
+	if err != nil {
+		t.Fatalf("RunScanners: %v", err)
+	}
+	if len(result.IAMPositiveEdges) != 2 || len(result.SourceCompleteness) != 2 {
+		t.Fatalf("private evidence = edges:%#v completeness:%#v", result.IAMPositiveEdges, result.SourceCompleteness)
+	}
+	roles := map[string]bool{}
+	for _, edge := range result.IAMPositiveEdges {
+		roles[edge.RoleARN()] = true
+	}
+	if !roles["arn:aws:iam::123456789012:role/first"] || !roles["arn:aws:iam::123456789012:role/second"] {
+		t.Fatalf("positive edge roles = %#v", roles)
+	}
+	sources := map[string]bool{}
+	for _, completeness := range result.SourceCompleteness {
+		sources[completeness.Source] = true
+	}
+	if !sources["first"] || !sources["second"] {
+		t.Fatalf("source completeness = %#v", result.SourceCompleteness)
 	}
 }
 

@@ -230,6 +230,13 @@ func writeReportCoverage(w *errWriter, manifest CoverageManifest) {
 	w.printf("Evaluable opportunities: %d/%d\n", manifest.EvaluableOpportunities, manifest.TotalOpportunities)
 	w.println("")
 	for _, gap := range gaps {
+		if len(gap.AffectedFindings) == 0 {
+			// WO-128@v2: source-level coverage has no honest affected class or maximum consequence.
+			w.printf("- %s [%s]: %s; affected=none; evaluable=%d/%d\n",
+				markdownText(gap.Capability), markdownText(gap.Scope), markdownText(gap.Cause),
+				gap.EvaluableCount, gap.TotalCount)
+			continue
+		}
 		w.printf("- %s [%s]: %s; affected=%s; evaluable=%d/%d; maximum consequence=%s\n",
 			markdownText(gap.Capability), markdownText(gap.Scope), markdownText(gap.Cause),
 			markdownText(reportAffectedFindings(gap.AffectedFindings)), gap.EvaluableCount, gap.TotalCount,

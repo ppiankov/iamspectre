@@ -125,6 +125,12 @@ func printTextCoverage(w *errWriter, manifest CoverageManifest, partial bool) {
 		for _, affected := range gap.AffectedFindings {
 			classes = append(classes, fmt.Sprintf("%s=%d", affected.FindingID, affected.Count))
 		}
+		if len(classes) == 0 {
+			// WO-128@v2: render source-level coverage without implying a finding class or consequence.
+			w.printf("  - %s [%s]: %s; affected=none; evaluable=%d/%d\n",
+				gap.Capability, gap.Scope, gap.Cause, gap.EvaluableCount, gap.TotalCount)
+			continue
+		}
 		w.printf("  - %s [%s]: %s; affected=%s; evaluable=%d/%d; max=%s\n",
 			gap.Capability, gap.Scope, gap.Cause, strings.Join(classes, ","),
 			gap.EvaluableCount, gap.TotalCount, gap.MaxConsequence)
