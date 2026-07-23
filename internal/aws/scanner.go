@@ -129,10 +129,9 @@ func (s *AWSScanner) collectPodIdentity(ctx context.Context, result *iam.ScanRes
 			DescribedAssociations: 0,
 		})
 		result.CoverageGaps = append(result.CoverageGaps, iam.CoverageGapObservation{
-			Capability:     podIdentityCapability,
-			Cause:          podIdentitySourceUnconstructable,
-			Scope:          awsRegionScopePrefix + region,
-			MaxConsequence: iam.SeverityMedium,
+			Capability: podIdentityCapability,
+			Cause:      podIdentitySourceUnconstructable,
+			Scope:      awsRegionScopePrefix + region,
 		})
 		return nil
 	}

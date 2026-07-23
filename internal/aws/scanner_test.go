@@ -132,7 +132,7 @@ func TestCollectPodIdentityReturnsSourceConstructionErrorAsCoverageGap(t *testin
 	}
 	gap := result.CoverageGaps[0]
 	if gap.Capability != podIdentityCapability || gap.Cause != podIdentitySourceUnconstructable ||
-		gap.Scope != awsRegionScopePrefix+podIdentityRegionUnknown || gap.MaxConsequence != iam.SeverityMedium {
+		gap.Scope != awsRegionScopePrefix+podIdentityRegionUnknown {
 		t.Fatalf("coverage gap identity = %#v", gap)
 	}
 	if len(result.SourceCompleteness) != 1 {
