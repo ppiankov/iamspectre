@@ -139,14 +139,16 @@ func TestInitAWSDocumentedActionsMatchGeneratedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read CLI reference: %v", err)
 	}
+	// WO-131@v1: normalize checkout line endings before parsing logical Markdown structure.
+	documentText := strings.ReplaceAll(string(document), "\r\n", "\n")
 	const permissionsHeading = "## IAM permissions"
 	const awsHeading = "### AWS\n"
 	const gcpHeading = "\n### GCP"
-	permissions := strings.Index(string(document), permissionsHeading)
+	permissions := strings.Index(documentText, permissionsHeading)
 	if permissions < 0 {
 		t.Fatal("CLI reference omits IAM permissions heading")
 	}
-	permissionSection := string(document)[permissions+len(permissionsHeading):]
+	permissionSection := documentText[permissions+len(permissionsHeading):]
 	start := strings.Index(permissionSection, awsHeading)
 	if start < 0 {
 		t.Fatal("CLI reference omits AWS permission heading")
