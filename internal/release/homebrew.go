@@ -178,6 +178,19 @@ var formulaVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A
 // uppercase letter and contains only letters and digits here.
 var formulaProjectNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*$`)
 
+// WO-148 (residual gap found in review): formulaClassName only uppercases the
+// FIRST byte and leaves the rest of the name as-is, so a ProjectName whose
+// capitalized form is exactly "BEGIN" or "END" (e.g. "BEGIN" or "bEGIN")
+// produces those two literal strings as the class name. They are Ruby's only
+// all-caps reserved keywords (used for BEGIN{}/END{} blocks), so `class BEGIN
+// < Formula` / `class END < Formula` is a syntax error — confirmed with
+// `ruby -c`. Every other Ruby keyword is lowercase, so capitalizing its first
+// letter (class -> Class, def -> Def, end -> End) yields a distinct,
+// non-reserved constant and is fine; these two are the sole exception because
+// they are already fully uppercase, making the capitalize-first-letter step a
+// no-op.
+var rubyReservedClassNames = map[string]bool{"BEGIN": true, "END": true}
+
 // WO-140: validate rejects FormulaInput values that cannot be rendered safely;
 // Version must be clean semver.
 // WO-143: free-text fields now use a positive allowlist (unsafeFormulaStringRune)
@@ -191,6 +204,9 @@ func (in FormulaInput) validate() error {
 	}
 	if !formulaProjectNamePattern.MatchString(in.ProjectName) {
 		return fmt.Errorf("invalid project name %q: must start with a letter and contain only letters and digits", in.ProjectName)
+	}
+	if className := formulaClassName(in.ProjectName); rubyReservedClassNames[className] {
+		return fmt.Errorf("invalid project name %q: capitalizes to the reserved Ruby keyword %q", in.ProjectName, className)
 	}
 	for _, f := range []struct{ name, value string }{
 		{"homepage", in.Homepage},

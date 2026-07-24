@@ -222,6 +222,32 @@ func TestRenderFormulaRejectsInvalidProjectNameShape(t *testing.T) {
 	}
 }
 
+// WO-148 (residual gap found in review, verified with `ruby -c`): formulaClassName
+// only uppercases the first byte, so a ProjectName that is already all-uppercase
+// passes through unchanged. "BEGIN" and "END" are Ruby's only all-caps reserved
+// keywords, so `class BEGIN < Formula` / `class END < Formula` is a syntax error
+// even though the shape regex (leading letter, letters/digits only) accepts them.
+// "bEGIN" must also be rejected: capitalizing its first letter also yields "BEGIN".
+func TestRenderFormulaRejectsReservedRubyClassName(t *testing.T) {
+	for _, bad := range []string{"BEGIN", "END", "bEGIN"} {
+		in := testFormulaInput()
+		in.ProjectName = bad
+		if _, err := RenderFormula(in); err == nil {
+			t.Fatalf("expected error for reserved-keyword project name %q, got nil", bad)
+		}
+	}
+
+	// Every other Ruby keyword is lowercase, so capitalizing its first letter
+	// yields a distinct, non-reserved constant and must still be accepted.
+	for _, ok := range []string{"class", "def", "end", "module"} {
+		in := testFormulaInput()
+		in.ProjectName = ok
+		if err := in.validate(); err != nil {
+			t.Fatalf("validate rejected valid project name %q: %v", ok, err)
+		}
+	}
+}
+
 func TestParseChecksums(t *testing.T) {
 	input := "aaaa  iamspectre_1.2.3_darwin_arm64.tar.gz\n" +
 		"bbbb  iamspectre_1.2.3_darwin_amd64.tar.gz\n" +
