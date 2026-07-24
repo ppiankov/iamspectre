@@ -382,8 +382,9 @@ func TestRoleScanner_TrustPolicyParseError(t *testing.T) {
 	}
 }
 
-// WO-54@v3: recognize only determinate OIDC federated grants for annotation.
-func TestClassifyWebIdentityTrust(t *testing.T) {
+// WO-134: the web-identity table now exercises the live lossless extractor (observeWebIdentityTrust);
+// the dead classifyWebIdentityTrust boolean seam was removed.
+func TestObserveWebIdentityTrust(t *testing.T) {
 	tests := []struct {
 		name, statement string
 		want            bool
@@ -404,8 +405,8 @@ func TestClassifyWebIdentityTrust(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			encoded := url.QueryEscape(`{"Statement":` + tt.statement + `}`)
-			if got := classifyWebIdentityTrust(&encoded); got != tt.want {
-				t.Fatalf("classifyWebIdentityTrust() = %v, want %v", got, tt.want)
+			if got := len(observeWebIdentityTrust(&encoded)) > 0; got != tt.want {
+				t.Fatalf("observeWebIdentityTrust() present = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -611,6 +612,35 @@ func TestRoleScanner_ServiceLinkedRoleStillEmitsKnownPositiveEdges(t *testing.T)
 	}
 	if len(result.Findings) != 0 || len(result.IAMPositiveEdges) != 2 || len(mock.getRoleCalls) != 0 {
 		t.Fatalf("findings=%#v edges=%#v GetRole=%#v", result.Findings, result.IAMPositiveEdges, mock.getRoleCalls)
+	}
+}
+
+// WO-135: a service-linked role carries no ListRoles usage evidence and is not enriched, so under the
+// realistic ListRoles contract it emits its trust edge but no activity edge and makes no GetRole call.
+func TestRoleScanner_ServiceLinkedRoleNoUsageEmitsTrustOnly(t *testing.T) {
+	fixedNow := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	pod := url.QueryEscape(`{"Statement":{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}}`)
+	role := iamtypes.Role{
+		RoleName:                 awssdk.String("AWSServiceRoleForExample"),
+		Arn:                      awssdk.String("arn:aws:iam::123456789012:role/aws-service-role/example.amazonaws.com/AWSServiceRoleForExample"),
+		Path:                     awssdk.String("/aws-service-role/example.amazonaws.com/"),
+		AssumeRolePolicyDocument: &pod,
+	}
+	mock := &mockIAM{roles: []iamtypes.Role{role}}
+	scanner := NewRoleScanner(mock, "123456789012")
+	scanner.now = func() time.Time { return fixedNow }
+	result, err := scanner.Scan(context.Background(), iam.ScanConfig{StaleDays: 90})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %#v, want none", result.Findings)
+	}
+	if len(result.IAMPositiveEdges) != 1 || result.IAMPositiveEdges[0].Type() != iam.IAMTrustPodIdentityObserved {
+		t.Fatalf("edges = %#v, want exactly the pod-identity trust edge", result.IAMPositiveEdges)
+	}
+	if len(mock.getRoleCalls) != 0 {
+		t.Fatalf("GetRole calls = %#v, want none (service-linked roles are not enriched)", mock.getRoleCalls)
 	}
 }
 
