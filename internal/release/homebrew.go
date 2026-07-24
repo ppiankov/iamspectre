@@ -1,0 +1,273 @@
+// Package release holds the release-engineering contracts and helpers that
+// back .github/workflows/release.yml and .goreleaser.yml.
+package release
+
+import (
+	"bytes"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+	"text/template"
+	"unicode"
+	"unicode/utf8"
+)
+
+// FormulaInput describes the values needed to render an explicit-version
+// Homebrew Formula. GoReleaser's built-in `brews` publisher was deprecated in
+// favor of `homebrew_casks`, but this repository's packaging policy requires
+// a Formula (not a Cask), so the formula is rendered and published directly
+// (see cmd/publish-homebrew-formula) instead of through GoReleaser.
+type FormulaInput struct {
+	ProjectName string
+	Version     string // semver without a leading "v"
+	Homepage    string
+	Description string
+	License     string
+	RepoOwner   string
+	// Checksums maps an archive filename (as produced by the `archives`
+	// name_template in .goreleaser.yml) to its sha256 from checksums.txt.
+	Checksums map[string]string
+}
+
+// requiredArchive identifies one of the four platform/arch combinations the
+// rendered Formula installs from.
+type requiredArchive struct {
+	goos, goarch string
+}
+
+var formulaArchives = []requiredArchive{
+	{"darwin", "arm64"},
+	{"darwin", "amd64"},
+	{"linux", "arm64"},
+	{"linux", "amd64"},
+}
+
+const formulaTemplate = `class {{.ClassName}} < Formula
+  desc "{{.Description}}"
+  homepage "{{.Homepage}}"
+  version "{{.Version}}"
+  license "{{.License}}"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/{{.RepoOwner}}/{{.ProjectName}}/releases/download/v{{.Version}}/{{.DarwinArm64File}}"
+      sha256 "{{.DarwinArm64Sha}}"
+    end
+    on_intel do
+      url "https://github.com/{{.RepoOwner}}/{{.ProjectName}}/releases/download/v{{.Version}}/{{.DarwinAmd64File}}"
+      sha256 "{{.DarwinAmd64Sha}}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/{{.RepoOwner}}/{{.ProjectName}}/releases/download/v{{.Version}}/{{.LinuxArm64File}}"
+      sha256 "{{.LinuxArm64Sha}}"
+    end
+    on_intel do
+      url "https://github.com/{{.RepoOwner}}/{{.ProjectName}}/releases/download/v{{.Version}}/{{.LinuxAmd64File}}"
+      sha256 "{{.LinuxAmd64Sha}}"
+    end
+  end
+
+  def install
+    bin.install "{{.ProjectName}}"
+  end
+
+  test do
+    system "#{bin}/{{.ProjectName}}", "version"
+  end
+end
+`
+
+// RenderFormula renders an explicit-version Homebrew Formula for the four
+// macOS/Linux amd64/arm64 archives. It fails closed: every archive must have
+// a matching checksum, or no formula is produced.
+func RenderFormula(in FormulaInput) (string, error) {
+	// WO-140: fail closed on inputs that would break the rendered Ruby string
+	// literals or the releases/download/v<version>/ URL path — text/template
+	// performs no Ruby-context escaping, so validation is the only guard.
+	if err := in.validate(); err != nil {
+		return "", err
+	}
+
+	archiveFile := func(goos, goarch string) string {
+		return fmt.Sprintf("%s_%s_%s_%s.tar.gz", in.ProjectName, in.Version, goos, goarch)
+	}
+
+	shaFor := func(goos, goarch string) (string, error) {
+		name := archiveFile(goos, goarch)
+		sha, ok := in.Checksums[name]
+		if !ok || sha == "" {
+			return "", fmt.Errorf("missing checksum for %s", name)
+		}
+		return sha, nil
+	}
+
+	var missing []string
+	shas := map[string]string{}
+	for _, a := range formulaArchives {
+		sha, err := shaFor(a.goos, a.goarch)
+		if err != nil {
+			missing = append(missing, err.Error())
+			continue
+		}
+		shas[a.goos+"/"+a.goarch] = sha
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return "", fmt.Errorf("cannot render Homebrew formula: %s", strings.Join(missing, "; "))
+	}
+
+	data := struct {
+		ClassName string
+		FormulaInput
+		DarwinArm64File string
+		DarwinArm64Sha  string
+		DarwinAmd64File string
+		DarwinAmd64Sha  string
+		LinuxArm64File  string
+		LinuxArm64Sha   string
+		LinuxAmd64File  string
+		LinuxAmd64Sha   string
+	}{
+		ClassName:       formulaClassName(in.ProjectName),
+		FormulaInput:    in,
+		DarwinArm64File: archiveFile("darwin", "arm64"),
+		DarwinArm64Sha:  shas["darwin/arm64"],
+		DarwinAmd64File: archiveFile("darwin", "amd64"),
+		DarwinAmd64Sha:  shas["darwin/amd64"],
+		LinuxArm64File:  archiveFile("linux", "arm64"),
+		LinuxArm64Sha:   shas["linux/arm64"],
+		LinuxAmd64File:  archiveFile("linux", "amd64"),
+		LinuxAmd64Sha:   shas["linux/amd64"],
+	}
+
+	tmpl, err := template.New("formula").Parse(formulaTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parse formula template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("render formula: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// formulaClassName converts a lowercase compound project name (e.g.
+// "iamspectre") into Homebrew's expected Formula class name ("Iamspectre").
+func formulaClassName(projectName string) string {
+	if projectName == "" {
+		return projectName
+	}
+	return strings.ToUpper(projectName[:1]) + projectName[1:]
+}
+
+// WO-140: formulaVersionPattern accepts a leading-"v"-stripped semver. A
+// version outside this shape could inject characters into the Ruby `version`
+// string or, worse, into the releases/download/v<version>/ download URL.
+var formulaVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+// WO-143: formulaProjectNamePattern is the strictest allowlist. ProjectName is
+// spliced UNQUOTED into `class <Name> < Formula` (via formulaClassName) and also
+// feeds the archive filename and download URL.
+// WO-148: it must additionally start with a letter and contain only letters and
+// digits (no leading digit, no hyphen), so formulaClassName always yields a
+// syntactically valid Ruby class name — a Ruby constant starts with an
+// uppercase letter and contains only letters and digits here.
+var formulaProjectNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*$`)
+
+// WO-148 (residual gap found in review): formulaClassName only uppercases the
+// FIRST byte and leaves the rest of the name as-is, so a ProjectName whose
+// capitalized form is exactly "BEGIN" or "END" (e.g. "BEGIN" or "bEGIN")
+// produces those two literal strings as the class name. They are Ruby's only
+// all-caps reserved keywords (used for BEGIN{}/END{} blocks), so `class BEGIN
+// < Formula` / `class END < Formula` is a syntax error — confirmed with
+// `ruby -c`. Every other Ruby keyword is lowercase, so capitalizing its first
+// letter (class -> Class, def -> Def, end -> End) yields a distinct,
+// non-reserved constant and is fine; these two are the sole exception because
+// they are already fully uppercase, making the capitalize-first-letter step a
+// no-op.
+var rubyReservedClassNames = map[string]bool{"BEGIN": true, "END": true}
+
+// WO-151: formulaRepoOwnerPattern constrains RepoOwner to a GitHub-owner-safe
+// identifier. RepoOwner is interpolated into the releases/download/ URL, so a
+// space or other URL-unsafe byte (even though it sits inside a quoted Ruby
+// string) would yield a malformed download URL. GitHub owners are alphanumerics
+// joined by single internal hyphens, with no leading or trailing hyphen.
+var formulaRepoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
+
+// WO-140: validate rejects FormulaInput values that cannot be rendered safely;
+// Version must be clean semver.
+// WO-143: free-text fields now use a positive allowlist (unsafeFormulaStringRune)
+// instead of a denylist, closing the Ruby `#{...}` string-interpolation gap the
+// original denylist missed, and ProjectName gets the stricter identifier
+// allowlist. It fails closed with an error naming the offending value rather
+// than emitting a malformed or injectable Formula.
+func (in FormulaInput) validate() error {
+	if !formulaVersionPattern.MatchString(in.Version) {
+		return fmt.Errorf("invalid version %q: expected semver without a leading v (e.g. 1.2.3)", in.Version)
+	}
+	if !formulaProjectNamePattern.MatchString(in.ProjectName) {
+		return fmt.Errorf("invalid project name %q: must start with a letter and contain only letters and digits", in.ProjectName)
+	}
+	if className := formulaClassName(in.ProjectName); rubyReservedClassNames[className] {
+		return fmt.Errorf("invalid project name %q: capitalizes to the reserved Ruby keyword %q", in.ProjectName, className)
+	}
+	// WO-151: RepoOwner feeds the releases/download/ URL, so constrain it to a
+	// GitHub-owner-safe identifier rather than only the free-text allowlist — a
+	// URL-unsafe-but-graphic value (space, "?", "%") must fail closed.
+	if !formulaRepoOwnerPattern.MatchString(in.RepoOwner) {
+		return fmt.Errorf("invalid repo owner %q: must be a GitHub-owner-safe identifier (letters, digits, internal hyphens)", in.RepoOwner)
+	}
+	for _, f := range []struct{ name, value string }{
+		{"homepage", in.Homepage},
+		{"description", in.Description},
+		{"license", in.License},
+	} {
+		// WO-147: reject invalid UTF-8 first. strings.IndexFunc decodes bad bytes
+		// to utf8.RuneError (U+FFFD), which is graphic and slips past
+		// unsafeFormulaStringRune, letting raw invalid bytes render into the Formula.
+		if !utf8.ValidString(f.value) {
+			return fmt.Errorf("invalid %s %q: contains invalid UTF-8", f.name, f.value)
+		}
+		if strings.IndexFunc(f.value, unsafeFormulaStringRune) >= 0 {
+			return fmt.Errorf("invalid %s %q: contains a character that cannot be safely rendered into the Formula", f.name, f.value)
+		}
+	}
+	return nil
+}
+
+// WO-143: unsafeFormulaStringRune allowlists only characters safe inside a Ruby
+// double-quoted string literal. It permits any graphic rune — letters, digits,
+// punctuation, symbols, and spaces, including non-ASCII such as the em dash in
+// the default description — EXCEPT the three that enable escaping, termination,
+// or interpolation: backslash, double-quote, and '#' (which begins Ruby's
+// #{...}, #@, and #$ interpolation). Control characters (newline, tab, DEL) are
+// not graphic and are therefore rejected. It returns true for a rune that must
+// be rejected.
+func unsafeFormulaStringRune(r rune) bool {
+	if r == '"' || r == '\\' || r == '#' {
+		return true
+	}
+	return !unicode.IsGraphic(r)
+}
+
+// ParseChecksums parses GoReleaser's checksums.txt format
+// ("<sha256>  <filename>" per line) into a filename -> sha256 map.
+func ParseChecksums(data string) (map[string]string, error) {
+	sums := map[string]string{}
+	for lineNum, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("checksums.txt line %d: expected \"<sha256> <filename>\", got %q", lineNum+1, line)
+		}
+		sums[fields[1]] = fields[0]
+	}
+	return sums, nil
+}

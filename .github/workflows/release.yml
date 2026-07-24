@@ -105,11 +105,19 @@ jobs:
           go install github.com/anchore/quill/cmd/quill@v0.7.1
           go install github.com/goreleaser/goreleaser/v2@v2.13.3
 
+      # WO-142: compile the release-only tap publisher BEFORE goreleaser publishes
+      # any artifacts, so a build error in cmd/publish-homebrew-formula fails the
+      # release before the tag's assets exist rather than after (the publish step
+      # itself runs post-goreleaser via `go run`). The `test` job this release job
+      # depends on also compiles it (`make test` = `go test -race ./...`); this
+      # step keeps the guarantee local to the release job.
+      - name: Verify Homebrew publisher compiles
+        run: go build -o /dev/null ./cmd/publish-homebrew-formula
+
       # WO-82@v4: Keep signing credentials confined to the fail-closed release step.
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           QUILL_SIGN_P12: ${{ secrets.QUILL_SIGN_P12 }}
           QUILL_SIGN_PASSWORD: ${{ secrets.QUILL_SIGN_PASSWORD }}
           QUILL_NOTARY_KEY: ${{ secrets.QUILL_NOTARY_KEY }}
@@ -130,3 +138,16 @@ jobs:
             fi
           done
           goreleaser release --clean
+
+      # WO-96: GoReleaser's `brews` publisher is deprecated in favor of `homebrew_casks`,
+      # but this repository's packaging policy requires a Formula, not a Cask, so the
+      # tap update is a separate fail-closed step instead of a GoReleaser publisher.
+      - name: Publish Homebrew formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "::error::Required release credential HOMEBREW_TAP_TOKEN is not configured"
+            exit 1
+          fi
+          go run ./cmd/publish-homebrew-formula --version "${{ needs.resolve.outputs.tag }}" --checksums dist/checksums.txt

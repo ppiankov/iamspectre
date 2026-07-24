@@ -5,6 +5,23 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-07-24
+
+### Fixed
+
+- Migrated `.goreleaser.yml` off three GoReleaser v3 deprecations so `goreleaser check` is a clean release gate: archive `format` keys to plural `formats` (WO-94), `dockers`/`docker_manifests` to a single `dockers_v2` buildx definition with `Dockerfile.goreleaser` reading `$TARGETPLATFORM` (WO-95), and the deprecated `brews` publisher to a dedicated `cmd/publish-homebrew-formula` tool that renders and pushes an explicit-version Formula (WO-96), since GoReleaser's suggested `homebrew_casks` migration would abandon this project's Formula-only packaging policy
+- Release workflow now runs the Homebrew tap publish as its own fail-closed step after `goreleaser release --clean`, instead of relying on GoReleaser to update the tap
+- Release job now verifies `cmd/publish-homebrew-formula` compiles before GoReleaser publishes any release assets, so a build error in the tap publisher fails the release before the tag's artifacts exist rather than after (WO-142)
+
+### Changed
+
+- The `dockers_v2` migration (WO-95) no longer publishes the intermediate `ghcr.io/ppiankov/iamspectre:<version>-amd64`/`:<version>-arm64` per-arch image tags that the old `dockers`/`docker_manifests` pipeline produced alongside the multi-arch `:<version>`/`:latest` manifests. Pull the multi-arch tags instead of a per-arch tag directly.
+
+### Security
+
+- The Homebrew Formula publisher validates every rendered field and fails closed on unsafe input: versions must be clean semver, the project name is restricted to letters/digits/hyphens, and free-text fields are allowlisted to graphic characters — rejecting Ruby string interpolation (`#{...}`), quotes, and backslashes so a crafted field cannot inject code into the generated Formula (WO-140, WO-143)
+- The tap push credential is now supplied to git via `GIT_CONFIG_*` environment variables instead of a `-c http.extraheader` command-line argument, so it no longer appears in the process table during clone/push (WO-141)
+
 ## [0.6.1] - 2026-07-23
 
 ### Fixed
