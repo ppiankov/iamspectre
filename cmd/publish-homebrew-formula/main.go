@@ -35,6 +35,7 @@ type config struct {
 	description   string
 	license       string
 	checksumsPath string
+	repoOwner     string
 	tapOwner      string
 	tapRepo       string
 	tapBranch     string
@@ -64,7 +65,7 @@ func run(args []string) error {
 		Homepage:    cfg.homepage,
 		Description: cfg.description,
 		License:     cfg.license,
-		RepoOwner:   cfg.tapOwner,
+		RepoOwner:   cfg.repoOwner,
 		Checksums:   checksums,
 	})
 	if err != nil {
@@ -93,7 +94,8 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.description, "description", "Cross-cloud IAM auditor — finds unused, over-permissioned, and stale identities", "formula description")
 	fs.StringVar(&cfg.license, "license", "MIT", "formula license")
 	fs.StringVar(&cfg.checksumsPath, "checksums", "dist/checksums.txt", "path to GoReleaser's checksums.txt")
-	fs.StringVar(&cfg.tapOwner, "tap-owner", "ppiankov", "GitHub owner of the tap repository")
+	fs.StringVar(&cfg.repoOwner, "repo-owner", "ppiankov", "GitHub owner of the project repo (used in release-asset download URLs)")
+	fs.StringVar(&cfg.tapOwner, "tap-owner", "ppiankov", "GitHub owner of the tap repository (independent of -repo-owner)")
 	fs.StringVar(&cfg.tapRepo, "tap-repo", "homebrew-tap", "tap repository name")
 	fs.StringVar(&cfg.tapBranch, "tap-branch", "main", "tap repository branch to push to")
 	fs.StringVar(&cfg.formulaPath, "formula-path", "Formula/iamspectre.rb", "formula path within the tap repository")
