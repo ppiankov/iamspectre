@@ -140,19 +140,31 @@ func publish(cfg config, token, formula string) error {
 		return s
 	}
 
-	runGit := func(dir string, args ...string) error {
+	runGitEnv := func(dir string, extraEnv []string, args ...string) error {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		if len(extraEnv) > 0 {
+			cmd.Env = append(os.Environ(), extraEnv...)
+		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("git %s: %w: %s", redact(strings.Join(args, " ")), err, redact(string(out)))
 		}
 		return nil
 	}
+	runGit := func(dir string, args ...string) error {
+		return runGitEnv(dir, nil, args...)
+	}
 	// runGitAuth is for invocations that talk to the remote (clone, push);
 	// add/commit are local-only and never need the auth header.
+	//
+	// WO-141: the credential travels via GIT_CONFIG_* environment variables
+	// (see gitAuthEnv), not a `-c http.extraheader=` argv override, so the
+	// base64 Authorization header never appears in the process table
+	// (/proc/<pid>/cmdline, ps). It is still never written to the clone's
+	// .git/config (WO-139) — GIT_CONFIG_* config applies to this process only.
 	runGitAuth := func(dir string, args ...string) error {
-		return runGit(dir, append([]string{"-c", "http.extraheader=" + authHeader}, args...)...)
+		return runGitEnv(dir, gitAuthEnv(authHeader), args...)
 	}
 
 	if err := runGitAuth(tmpDir, "clone", "--depth", "1", "--branch", cfg.tapBranch, cloneURL, "."); err != nil {
@@ -184,4 +196,18 @@ func publish(cfg config, token, formula string) error {
 
 	fmt.Printf("publish-homebrew-formula: published %s to %s/%s@%s\n", cfg.formulaPath, cfg.tapOwner, cfg.tapRepo, cfg.tapBranch)
 	return nil
+}
+
+// WO-141: gitAuthEnv returns the GIT_CONFIG_* environment entries that inject
+// the tap Authorization header into a single git invocation without placing
+// the credential on the process argv or persisting it to the clone's
+// .git/config. It is the one place the auth header is wired into git, so a
+// regression back to an argv-visible `-c http.extraheader=` override is caught
+// by TestGitAuthEnvKeepsCredentialOffArgv.
+func gitAuthEnv(authHeader string) []string {
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraheader",
+		"GIT_CONFIG_VALUE_0=" + authHeader,
+	}
 }
