@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release now hard-fails when the checked-out `CHANGELOG.md` lacks a `## [<tag>]` section before publishing assets
 - Added contract tests under `internal/release/workflow_contract_test.go` for release trigger shape, dispatch flow, changelog presence, and asset/formula sequencing
 
+### Changed
+
+- Internal cleanup of the AWS role scanner's positive-edge path: removed a dead trust-classification seam and documented the service-linked role activity-edge coverage boundary, with a more realistic service-linked test fixture (no user-facing behavior change)
+
 ## [0.6.0] - 2026-07-23
 
 ### Added

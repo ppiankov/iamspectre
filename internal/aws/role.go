@@ -151,6 +151,10 @@ func (s *RoleScanner) Scan(ctx context.Context, cfg iam.ScanConfig) (*iam.ScanRe
 				slog.Debug("role_last_used_coverage_detail", "role", roleName, "cause", unavailableCause)
 			}
 		}
+		// WO-135: activity edges follow RoleLastUsed enrichment, which runs only for UNUSED_ROLE-eligible
+		// roles (includeUnused). Roles excluded from unused analysis (service-linked roles by default) are
+		// not enriched, and ListRoles omits RoleLastUsed.LastUsedDate, so they emit trust edges but no
+		// activity edge by design; trust edges are parsed from the already-fetched policy document.
 		if roleLastUsed != nil && roleLastUsed.LastUsedDate != nil {
 			lastUsedAt := roleLastUsed.LastUsedDate.UTC()
 			// WO-119@v2: populated usage is an observed fact even when no stale finding exists.
@@ -258,6 +262,9 @@ func observeWebIdentityTrust(policyDoc *string) []webIdentityTrustObservation {
 	if err != nil {
 		return nil
 	}
+	// WO-119@v2: rawStatements aligns to doc.Statement by index. Parity is structural (both parsers
+	// accept the same Statement container shapes in the same order); preserve it if either parser
+	// changes, or subject conditions could attach to the wrong statement.
 	rawStatements := parseRawTrustStatements(*policyDoc)
 	observations := make([]webIdentityTrustObservation, 0)
 	for statementIndex, statement := range doc.Statement {
@@ -290,11 +297,6 @@ func observeWebIdentityTrust(policyDoc *string) []webIdentityTrustObservation {
 		return webIdentityObservationKey(observations[i]) < webIdentityObservationKey(observations[j])
 	})
 	return observations
-}
-
-// WO-54@v3: retain the legacy boolean seam over the lossless positive observation extractor.
-func classifyWebIdentityTrust(policyDoc *string) bool {
-	return len(observeWebIdentityTrust(policyDoc)) > 0
 }
 
 // WO-119@v2: retain the provider resource verbatim after structural IAM OIDC ARN validation.
