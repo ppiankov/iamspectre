@@ -11,7 +11,7 @@
 - Detects stale users, unused roles, wildcard policies, missing MFA, and expired secrets
 - Checks credential reports, key ages, service account bindings, and directory roles
 - Each finding includes severity and actionable recommendation
-- Outputs text, JSON, SARIF, and SpectreHub formats
+- Outputs text, Markdown report, JSON, SARIF, and SpectreHub formats
 
 ## What it is NOT
 
@@ -27,6 +27,13 @@
 ```sh
 brew tap ppiankov/tap
 brew install iamspectre
+```
+
+### Docker
+
+```sh
+docker pull ghcr.io/ppiankov/iamspectre:latest
+docker run --rm ghcr.io/ppiankov/iamspectre:latest aws --format json
 ```
 
 ### Windows

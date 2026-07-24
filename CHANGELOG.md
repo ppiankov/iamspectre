@@ -5,6 +5,12 @@ All notable changes to IAMSpectre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-07-25
+
+### Fixed
+
+- Documentation corrected against the shipped v0.6.2 build: `docs/cli-reference.md`'s Project Status version line was six releases stale (v0.1.0); the `report` output format (shipped since v0.5.0) was missing from README's format list, all three `--format` flag tables, the Output formats section, and the architecture-tree reporter comment; README's Quick Start was missing the Docker install path that `docs/cli-reference.md` already documented (WO-153)
+
 ## [0.6.2] - 2026-07-24
 
 ### Fixed
