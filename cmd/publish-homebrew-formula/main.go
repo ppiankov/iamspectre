@@ -11,6 +11,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
@@ -113,8 +114,15 @@ func parseFlags(args []string) (config, error) {
 }
 
 // publish clones the tap repository, writes the rendered formula, and pushes
-// the commit. Every git invocation's combined output has the token redacted
-// before it can reach an error message.
+// the commit. Every git invocation's combined output has all secrets
+// redacted before it can reach an error message.
+//
+// Authentication is supplied as a one-off http.extraheader config override
+// on the clone and push invocations, not as a credential embedded in the
+// remote URL: a -c override applies only to that single process and is
+// never written to the cloned repo's git config, whereas a credential
+// embedded in the URL persists in .git/config on disk for as long as the
+// temp directory survives.
 func publish(cfg config, token, formula string) error {
 	tmpDir, err := os.MkdirTemp("", "homebrew-tap-*")
 	if err != nil {
@@ -122,20 +130,32 @@ func publish(cfg config, token, formula string) error {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	authURL := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, cfg.tapOwner, cfg.tapRepo)
-	redact := func(s string) string { return strings.ReplaceAll(s, token, "***") }
+	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.tapOwner, cfg.tapRepo)
+	authHeader := "AUTHORIZATION: basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+	secrets := []string{token, authHeader}
+	redact := func(s string) string {
+		for _, secret := range secrets {
+			s = strings.ReplaceAll(s, secret, "***")
+		}
+		return s
+	}
 
 	runGit := func(dir string, args ...string) error {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("git %s: %w: %s", strings.Join(redactArgs(args, token), " "), err, redact(string(out)))
+			return fmt.Errorf("git %s: %w: %s", redact(strings.Join(args, " ")), err, redact(string(out)))
 		}
 		return nil
 	}
+	// runGitAuth is for invocations that talk to the remote (clone, push);
+	// add/commit are local-only and never need the auth header.
+	runGitAuth := func(dir string, args ...string) error {
+		return runGit(dir, append([]string{"-c", "http.extraheader=" + authHeader}, args...)...)
+	}
 
-	if err := runGit(tmpDir, "clone", "--depth", "1", "--branch", cfg.tapBranch, authURL, "."); err != nil {
+	if err := runGitAuth(tmpDir, "clone", "--depth", "1", "--branch", cfg.tapBranch, cloneURL, "."); err != nil {
 		return fmt.Errorf("clone tap: %w", err)
 	}
 
@@ -158,20 +178,10 @@ func publish(cfg config, token, formula string) error {
 		}
 		return fmt.Errorf("commit formula: %w", err)
 	}
-	if err := runGit(tmpDir, "push", "origin", "HEAD:"+cfg.tapBranch); err != nil {
+	if err := runGitAuth(tmpDir, "push", "origin", "HEAD:"+cfg.tapBranch); err != nil {
 		return fmt.Errorf("push formula: %w", err)
 	}
 
 	fmt.Printf("publish-homebrew-formula: published %s to %s/%s@%s\n", cfg.formulaPath, cfg.tapOwner, cfg.tapRepo, cfg.tapBranch)
 	return nil
-}
-
-// redactArgs returns a copy of args with any occurrence of token replaced,
-// so the authenticated clone URL never reaches an error message verbatim.
-func redactArgs(args []string, token string) []string {
-	redacted := make([]string, len(args))
-	for i, a := range args {
-		redacted[i] = strings.ReplaceAll(a, token, "***")
-	}
-	return redacted
 }
