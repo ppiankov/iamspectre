@@ -105,6 +105,15 @@ jobs:
           go install github.com/anchore/quill/cmd/quill@v0.7.1
           go install github.com/goreleaser/goreleaser/v2@v2.13.3
 
+      # WO-142: compile the release-only tap publisher BEFORE goreleaser publishes
+      # any artifacts, so a build error in cmd/publish-homebrew-formula fails the
+      # release before the tag's assets exist rather than after (the publish step
+      # itself runs post-goreleaser via `go run`). The `test` job this release job
+      # depends on also compiles it (`make test` = `go test -race ./...`); this
+      # step keeps the guarantee local to the release job.
+      - name: Verify Homebrew publisher compiles
+        run: go build -o /dev/null ./cmd/publish-homebrew-formula
+
       # WO-82@v4: Keep signing credentials confined to the fail-closed release step.
       - name: Release
         env:
