@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"unicode"
 )
 
 // FormulaInput describes the values needed to render an explicit-version
@@ -167,34 +168,53 @@ func formulaClassName(projectName string) string {
 // string or, worse, into the releases/download/v<version>/ download URL.
 var formulaVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
-// WO-140: validate rejects FormulaInput values that cannot be rendered safely.
-// Version must be clean semver; every free-text field interpolated into a Ruby
-// double-quoted string must be free of quotes, backslashes, and control
-// characters. It fails closed with an error naming the offending value rather
-// than emitting a malformed Formula.
+// WO-143: formulaProjectNamePattern is the strictest allowlist. ProjectName is
+// spliced UNQUOTED into `class <Name> < Formula` (via formulaClassName) and also
+// feeds the archive filename and download URL, so it permits only letters,
+// digits, and hyphens — nothing that could break the class declaration or the
+// shell/URL contexts it flows into.
+var formulaProjectNamePattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
+// WO-140: validate rejects FormulaInput values that cannot be rendered safely;
+// Version must be clean semver.
+// WO-143: free-text fields now use a positive allowlist (unsafeFormulaStringRune)
+// instead of a denylist, closing the Ruby `#{...}` string-interpolation gap the
+// original denylist missed, and ProjectName gets the stricter identifier
+// allowlist. It fails closed with an error naming the offending value rather
+// than emitting a malformed or injectable Formula.
 func (in FormulaInput) validate() error {
 	if !formulaVersionPattern.MatchString(in.Version) {
 		return fmt.Errorf("invalid version %q: expected semver without a leading v (e.g. 1.2.3)", in.Version)
 	}
+	if !formulaProjectNamePattern.MatchString(in.ProjectName) {
+		return fmt.Errorf("invalid project name %q: only letters, digits, and hyphens are allowed", in.ProjectName)
+	}
 	for _, f := range []struct{ name, value string }{
-		{"project name", in.ProjectName},
 		{"homepage", in.Homepage},
 		{"description", in.Description},
 		{"license", in.License},
 		{"repo owner", in.RepoOwner},
 	} {
-		if strings.IndexFunc(f.value, unsafeFormulaRune) >= 0 {
+		if strings.IndexFunc(f.value, unsafeFormulaStringRune) >= 0 {
 			return fmt.Errorf("invalid %s %q: contains a character that cannot be safely rendered into the Formula", f.name, f.value)
 		}
 	}
 	return nil
 }
 
-// WO-140: unsafeFormulaRune reports runes that would break a Ruby
-// double-quoted string literal — a double-quote, a backslash, or any control
-// character (newlines and the DEL byte included).
-func unsafeFormulaRune(r rune) bool {
-	return r == '"' || r == '\\' || r < 0x20 || r == 0x7f
+// WO-143: unsafeFormulaStringRune allowlists only characters safe inside a Ruby
+// double-quoted string literal. It permits any graphic rune — letters, digits,
+// punctuation, symbols, and spaces, including non-ASCII such as the em dash in
+// the default description — EXCEPT the three that enable escaping, termination,
+// or interpolation: backslash, double-quote, and '#' (which begins Ruby's
+// #{...}, #@, and #$ interpolation). Control characters (newline, tab, DEL) are
+// not graphic and are therefore rejected. It returns true for a rune that must
+// be rejected.
+func unsafeFormulaStringRune(r rune) bool {
+	if r == '"' || r == '\\' || r == '#' {
+		return true
+	}
+	return !unicode.IsGraphic(r)
 }
 
 // ParseChecksums parses GoReleaser's checksums.txt format

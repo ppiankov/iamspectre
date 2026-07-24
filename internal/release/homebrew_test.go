@@ -129,6 +129,45 @@ func TestRenderFormulaRejectsInvalidVersion(t *testing.T) {
 	}
 }
 
+// WO-143: a free-text field carrying a Ruby string-interpolation sequence
+// (#{...}) must be rejected — the WO-140 denylist let it through, which would
+// execute arbitrary Ruby at `brew install` time.
+func TestRenderFormulaRejectsRubyInterpolation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		apply func(*FormulaInput)
+	}{
+		{"description", func(in *FormulaInput) { in.Description = `auditor #{system("id")}` }},
+		{"homepage", func(in *FormulaInput) { in.Homepage = `https://example.com/#{x}` }},
+		{"license", func(in *FormulaInput) { in.License = `MIT #{x}` }},
+		{"repo owner", func(in *FormulaInput) { in.RepoOwner = `ppiankov#{x}` }},
+	} {
+		in := testFormulaInput()
+		tc.apply(&in)
+		if _, err := RenderFormula(in); err == nil {
+			t.Fatalf("%s: expected error for Ruby interpolation #{...}, got nil", tc.name)
+		}
+	}
+}
+
+// WO-143: ProjectName is spliced unquoted into the class declaration, so any
+// character outside the letters/digits/hyphen allowlist must fail closed.
+func TestRenderFormulaRejectsProjectNameInjection(t *testing.T) {
+	for _, bad := range []string{
+		`iamspectre; system("id")`,
+		`iamspectre" < Formula; end; system("id"); class X`,
+		"iamspectre\nclass Evil",
+		"iam spectre",
+		"",
+	} {
+		in := testFormulaInput()
+		in.ProjectName = bad
+		if _, err := RenderFormula(in); err == nil {
+			t.Fatalf("expected error for project name %q, got nil", bad)
+		}
+	}
+}
+
 func TestParseChecksums(t *testing.T) {
 	input := "aaaa  iamspectre_1.2.3_darwin_arm64.tar.gz\n" +
 		"bbbb  iamspectre_1.2.3_darwin_amd64.tar.gz\n" +
