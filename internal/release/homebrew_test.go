@@ -165,6 +165,16 @@ func TestRenderFormulaAllowsNonASCIIDescription(t *testing.T) {
 	}
 }
 
+// WO-147: invalid UTF-8 bytes decode to U+FFFD (graphic) and slip past the rune
+// allowlist; they must be rejected explicitly rather than rendered raw.
+func TestRenderFormulaRejectsInvalidUTF8(t *testing.T) {
+	in := testFormulaInput()
+	in.Description = "auditor \xc0\xa3" // 0xC0 0xA3: invalid/overlong UTF-8
+	if _, err := RenderFormula(in); err == nil {
+		t.Fatal("expected error for description with invalid UTF-8, got nil")
+	}
+}
+
 // WO-143: ProjectName is spliced unquoted into the class declaration, so any
 // character outside the letters/digits/hyphen allowlist must fail closed.
 func TestRenderFormulaRejectsProjectNameInjection(t *testing.T) {

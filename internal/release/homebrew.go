@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/template"
 	"unicode"
+	"unicode/utf8"
 )
 
 // FormulaInput describes the values needed to render an explicit-version
@@ -195,6 +196,12 @@ func (in FormulaInput) validate() error {
 		{"license", in.License},
 		{"repo owner", in.RepoOwner},
 	} {
+		// WO-147: reject invalid UTF-8 first. strings.IndexFunc decodes bad bytes
+		// to utf8.RuneError (U+FFFD), which is graphic and slips past
+		// unsafeFormulaStringRune, letting raw invalid bytes render into the Formula.
+		if !utf8.ValidString(f.value) {
+			return fmt.Errorf("invalid %s %q: contains invalid UTF-8", f.name, f.value)
+		}
 		if strings.IndexFunc(f.value, unsafeFormulaStringRune) >= 0 {
 			return fmt.Errorf("invalid %s %q: contains a character that cannot be safely rendered into the Formula", f.name, f.value)
 		}
