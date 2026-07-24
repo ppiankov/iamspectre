@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrated `.goreleaser.yml` off three GoReleaser v3 deprecations so `goreleaser check` is a clean release gate: archive `format` keys to plural `formats` (WO-94), `dockers`/`docker_manifests` to a single `dockers_v2` buildx definition with `Dockerfile.goreleaser` reading `$TARGETPLATFORM` (WO-95), and the deprecated `brews` publisher to a dedicated `cmd/publish-homebrew-formula` tool that renders and pushes an explicit-version Formula (WO-96), since GoReleaser's suggested `homebrew_casks` migration would abandon this project's Formula-only packaging policy
 - Release workflow now runs the Homebrew tap publish as its own fail-closed step after `goreleaser release --clean`, instead of relying on GoReleaser to update the tap
 
+### Changed
+
+- The `dockers_v2` migration (WO-95) no longer publishes the intermediate `ghcr.io/ppiankov/iamspectre:<version>-amd64`/`:<version>-arm64` per-arch image tags that the old `dockers`/`docker_manifests` pipeline produced alongside the multi-arch `:<version>`/`:latest` manifests. Pull the multi-arch tags instead of a per-arch tag directly.
+
 ## [0.6.1] - 2026-07-23
 
 ### Fixed
