@@ -117,12 +117,10 @@ func parseFlags(args []string) (config, error) {
 // the commit. Every git invocation's combined output has all secrets
 // redacted before it can reach an error message.
 //
-// Authentication is supplied as a one-off http.extraheader config override
-// on the clone and push invocations, not as a credential embedded in the
-// remote URL: a -c override applies only to that single process and is
-// never written to the cloned repo's git config, whereas a credential
-// embedded in the URL persists in .git/config on disk for as long as the
-// temp directory survives.
+// Authentication is supplied to the clone and push invocations via
+// GIT_CONFIG_* environment variables (see gitAuthEnv), not embedded in the
+// remote URL and not placed on the git argv: it applies only to that single
+// process and is never written to the cloned repo's .git/config.
 func publish(cfg config, token, formula string) error {
 	tmpDir, err := os.MkdirTemp("", "homebrew-tap-*")
 	if err != nil {
