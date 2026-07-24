@@ -75,28 +75,15 @@ brews:
     test: |
       system "#{bin}/iamspectre", "version"
 
-dockers:
-  - image_templates:
-      - "ghcr.io/ppiankov/iamspectre:{{ .Version }}-amd64"
+dockers_v2:
+  - ids:
+      - iamspectre
     dockerfile: Dockerfile.goreleaser
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-    goarch: amd64
-  - image_templates:
-      - "ghcr.io/ppiankov/iamspectre:{{ .Version }}-arm64"
-    dockerfile: Dockerfile.goreleaser
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/arm64"
-    goarch: arm64
-
-docker_manifests:
-  - name_template: "ghcr.io/ppiankov/iamspectre:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/ppiankov/iamspectre:{{ .Version }}-amd64"
-      - "ghcr.io/ppiankov/iamspectre:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/ppiankov/iamspectre:latest"
-    image_templates:
-      - "ghcr.io/ppiankov/iamspectre:{{ .Version }}-amd64"
-      - "ghcr.io/ppiankov/iamspectre:{{ .Version }}-arm64"
+    images:
+      - ghcr.io/ppiankov/iamspectre
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
