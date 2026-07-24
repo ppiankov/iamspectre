@@ -150,6 +150,21 @@ func TestRenderFormulaRejectsRubyInterpolation(t *testing.T) {
 	}
 }
 
+// WO-143: the real default description (cmd/publish-homebrew-formula) contains
+// an em dash — a non-ASCII graphic rune. The allowlist must accept it, or live
+// releases break. Guards against an over-tightening to ASCII-only.
+func TestRenderFormulaAllowsNonASCIIDescription(t *testing.T) {
+	in := testFormulaInput()
+	in.Description = "Cross-cloud IAM auditor — finds unused, over-permissioned, and stale identities"
+	out, err := RenderFormula(in)
+	if err != nil {
+		t.Fatalf("RenderFormula rejected the default em-dash description: %v", err)
+	}
+	if !strings.Contains(out, "—") {
+		t.Fatal("rendered formula dropped the em dash from the description")
+	}
+}
+
 // WO-143: ProjectName is spliced unquoted into the class declaration, so any
 // character outside the letters/digits/hyphen allowlist must fail closed.
 func TestRenderFormulaRejectsProjectNameInjection(t *testing.T) {
