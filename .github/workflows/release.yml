@@ -109,7 +109,6 @@ jobs:
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           QUILL_SIGN_P12: ${{ secrets.QUILL_SIGN_P12 }}
           QUILL_SIGN_PASSWORD: ${{ secrets.QUILL_SIGN_PASSWORD }}
           QUILL_NOTARY_KEY: ${{ secrets.QUILL_NOTARY_KEY }}
@@ -130,3 +129,16 @@ jobs:
             fi
           done
           goreleaser release --clean
+
+      # WO-96: GoReleaser's `brews` publisher is deprecated in favor of `homebrew_casks`,
+      # but this repository's packaging policy requires a Formula, not a Cask, so the
+      # tap update is a separate fail-closed step instead of a GoReleaser publisher.
+      - name: Publish Homebrew formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "::error::Required release credential HOMEBREW_TAP_TOKEN is not configured"
+            exit 1
+          fi
+          go run ./cmd/publish-homebrew-formula --version "${{ needs.resolve.outputs.tag }}" --checksums dist/checksums.txt

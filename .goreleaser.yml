@@ -61,20 +61,6 @@ changelog:
       - "^test:"
       - "^chore:"
 
-brews:
-  - repository:
-      owner: ppiankov
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/ppiankov/iamspectre"
-    description: "Cross-cloud IAM auditor — finds unused, over-permissioned, and stale identities"
-    license: MIT
-    install: |
-      bin.install "iamspectre"
-    test: |
-      system "#{bin}/iamspectre", "version"
-
 dockers_v2:
   - ids:
       - iamspectre

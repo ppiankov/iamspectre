@@ -156,7 +156,10 @@ func TestCIWorkflowReleaseDispatchShape(t *testing.T) {
 	}
 }
 
-// WO-133@v2: assert release artifacts are generated before Homebrew publish sequencing in GoReleaser config.
+// WO-96: assert archives are still declared before checksums in GoReleaser
+// config, and that the deprecated `brews` publisher has not crept back in —
+// Homebrew Formula publishing is a separate, explicit-version step outside
+// GoReleaser now (see TestReleaseWorkflowHomebrewPublishSequencing).
 func TestReleaseGoreleaserSectionOrder(t *testing.T) {
 	config := sourceWorkflow(t, ".goreleaser.yml")
 	archivesIndex := strings.Index(config, "archives:")
@@ -167,12 +170,65 @@ func TestReleaseGoreleaserSectionOrder(t *testing.T) {
 	if checksumIndex == -1 {
 		t.Fatalf(".goreleaser.yml missing checksum block")
 	}
-	brewsIndex := strings.Index(config, "brews:")
-	if brewsIndex == -1 {
-		t.Fatalf(".goreleaser.yml missing brews block")
+	if archivesIndex >= checksumIndex {
+		t.Fatalf(".goreleaser.yml expected archives before checksum, got indices %d/%d", archivesIndex, checksumIndex)
 	}
-	if archivesIndex >= checksumIndex || checksumIndex >= brewsIndex {
-		t.Fatalf(".goreleaser.yml expected archives/checksum before brews, got indices %d/%d/%d", archivesIndex, checksumIndex, brewsIndex)
+	if strings.Contains(config, "brews:") {
+		t.Fatalf(".goreleaser.yml still declares the deprecated brews publisher; use cmd/publish-homebrew-formula instead")
+	}
+	if strings.Contains(config, "dockers:") || strings.Contains(config, "docker_manifests:") {
+		t.Fatalf(".goreleaser.yml still declares deprecated dockers/docker_manifests; use dockers_v2 instead")
+	}
+	if !strings.Contains(config, "dockers_v2:") {
+		t.Fatalf(".goreleaser.yml missing dockers_v2 block")
+	}
+}
+
+// WO-96: the Homebrew Formula tap update must run after GoReleaser has
+// produced checksums.txt, and must fail the job (not just log a warning) if
+// the release credential is missing.
+func TestReleaseWorkflowHomebrewPublishSequencing(t *testing.T) {
+	release := readWorkflow(t, ".github/workflows/release.yml")
+	releaseJobs, ok := release["jobs"].(map[string]any)
+	if !ok {
+		t.Fatalf("release.yml missing jobs block")
+	}
+	releaseJob, ok := releaseJobs["release"].(map[string]any)
+	if !ok {
+		t.Fatalf("release.yml missing release job")
+	}
+	steps, ok := releaseJob["steps"].([]any)
+	if !ok {
+		t.Fatalf("release.yml release job missing steps")
+	}
+
+	goreleaserIndex, publishIndex := -1, -1
+	var publishRun string
+	for index, stepValue := range steps {
+		step, ok := stepValue.(map[string]any)
+		if !ok {
+			continue
+		}
+		run, _ := step["run"].(string)
+		if strings.Contains(run, "goreleaser release --clean") {
+			goreleaserIndex = index
+		}
+		if strings.Contains(run, "cmd/publish-homebrew-formula") {
+			publishIndex = index
+			publishRun = run
+		}
+	}
+	if goreleaserIndex == -1 {
+		t.Fatalf("release.yml missing goreleaser release step")
+	}
+	if publishIndex == -1 {
+		t.Fatalf("release.yml missing Homebrew formula publish step")
+	}
+	if publishIndex <= goreleaserIndex {
+		t.Fatalf("release.yml Homebrew publish step (index %d) must run after the goreleaser release step (index %d)", publishIndex, goreleaserIndex)
+	}
+	if !strings.Contains(publishRun, "HOMEBREW_TAP_TOKEN") {
+		t.Fatalf("release.yml Homebrew publish step must fail closed when HOMEBREW_TAP_TOKEN is missing")
 	}
 }
 

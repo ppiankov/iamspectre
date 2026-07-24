@@ -1,0 +1,175 @@
+// Command publish-homebrew-formula renders and publishes an explicit-version
+// Homebrew Formula to ppiankov/homebrew-tap.
+//
+// GoReleaser's built-in `brews` publisher is deprecated in favor of
+// `homebrew_casks`, but this repository's packaging policy requires a
+// Formula (not a Cask), so this release-only tool takes over that step: it
+// reads the checksums GoReleaser already produced, renders Formula/<name>.rb
+// with an explicit version, and pushes it to the tap repository. Any
+// failure exits non-zero so the release workflow step (and job) fails
+// instead of silently skipping the tap update.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/ppiankov/iamspectre/internal/release"
+)
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "publish-homebrew-formula:", err)
+		os.Exit(1)
+	}
+}
+
+type config struct {
+	projectName   string
+	version       string
+	homepage      string
+	description   string
+	license       string
+	checksumsPath string
+	tapOwner      string
+	tapRepo       string
+	tapBranch     string
+	formulaPath   string
+	tokenEnv      string
+	dryRun        bool
+}
+
+func run(args []string) error {
+	cfg, err := parseFlags(args)
+	if err != nil {
+		return err
+	}
+
+	checksumBytes, err := os.ReadFile(cfg.checksumsPath)
+	if err != nil {
+		return fmt.Errorf("read checksums file %s: %w", cfg.checksumsPath, err)
+	}
+	checksums, err := release.ParseChecksums(string(checksumBytes))
+	if err != nil {
+		return fmt.Errorf("parse checksums file %s: %w", cfg.checksumsPath, err)
+	}
+
+	formula, err := release.RenderFormula(release.FormulaInput{
+		ProjectName: cfg.projectName,
+		Version:     cfg.version,
+		Homepage:    cfg.homepage,
+		Description: cfg.description,
+		License:     cfg.license,
+		RepoOwner:   cfg.tapOwner,
+		Checksums:   checksums,
+	})
+	if err != nil {
+		return fmt.Errorf("render formula: %w", err)
+	}
+
+	if cfg.dryRun {
+		fmt.Print(formula)
+		return nil
+	}
+
+	token := os.Getenv(cfg.tokenEnv)
+	if token == "" {
+		return fmt.Errorf("environment variable %s is not set", cfg.tokenEnv)
+	}
+
+	return publish(cfg, token, formula)
+}
+
+func parseFlags(args []string) (config, error) {
+	var cfg config
+	fs := flag.NewFlagSet("publish-homebrew-formula", flag.ContinueOnError)
+	fs.StringVar(&cfg.projectName, "project", "iamspectre", "project/binary name")
+	fs.StringVar(&cfg.version, "version", "", "release version, semver, with or without leading v (required)")
+	fs.StringVar(&cfg.homepage, "homepage", "https://github.com/ppiankov/iamspectre", "formula homepage")
+	fs.StringVar(&cfg.description, "description", "Cross-cloud IAM auditor — finds unused, over-permissioned, and stale identities", "formula description")
+	fs.StringVar(&cfg.license, "license", "MIT", "formula license")
+	fs.StringVar(&cfg.checksumsPath, "checksums", "dist/checksums.txt", "path to GoReleaser's checksums.txt")
+	fs.StringVar(&cfg.tapOwner, "tap-owner", "ppiankov", "GitHub owner of the tap repository")
+	fs.StringVar(&cfg.tapRepo, "tap-repo", "homebrew-tap", "tap repository name")
+	fs.StringVar(&cfg.tapBranch, "tap-branch", "main", "tap repository branch to push to")
+	fs.StringVar(&cfg.formulaPath, "formula-path", "Formula/iamspectre.rb", "formula path within the tap repository")
+	fs.StringVar(&cfg.tokenEnv, "token-env", "HOMEBREW_TAP_TOKEN", "environment variable holding the tap push token")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "render the formula to stdout and exit without publishing")
+	if err := fs.Parse(args); err != nil {
+		return cfg, err
+	}
+
+	cfg.version = strings.TrimPrefix(cfg.version, "v")
+	if cfg.version == "" {
+		return cfg, fmt.Errorf("-version is required")
+	}
+	return cfg, nil
+}
+
+// publish clones the tap repository, writes the rendered formula, and pushes
+// the commit. Every git invocation's combined output has the token redacted
+// before it can reach an error message.
+func publish(cfg config, token, formula string) error {
+	tmpDir, err := os.MkdirTemp("", "homebrew-tap-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	authURL := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, cfg.tapOwner, cfg.tapRepo)
+	redact := func(s string) string { return strings.ReplaceAll(s, token, "***") }
+
+	runGit := func(dir string, args ...string) error {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(redactArgs(args, token), " "), err, redact(string(out)))
+		}
+		return nil
+	}
+
+	if err := runGit(tmpDir, "clone", "--depth", "1", "--branch", cfg.tapBranch, authURL, "."); err != nil {
+		return fmt.Errorf("clone tap: %w", err)
+	}
+
+	formulaFullPath := filepath.Join(tmpDir, cfg.formulaPath)
+	if err := os.MkdirAll(filepath.Dir(formulaFullPath), 0o755); err != nil {
+		return fmt.Errorf("create formula directory: %w", err)
+	}
+	if err := os.WriteFile(formulaFullPath, []byte(formula), 0o644); err != nil {
+		return fmt.Errorf("write formula: %w", err)
+	}
+
+	if err := runGit(tmpDir, "add", cfg.formulaPath); err != nil {
+		return fmt.Errorf("stage formula: %w", err)
+	}
+	if err := runGit(tmpDir, "-c", "user.name=goreleaserbot", "-c", "user.email=goreleaserbot@users.noreply.github.com",
+		"commit", "-m", fmt.Sprintf("Brew formula update for %s version %s", cfg.projectName, cfg.version)); err != nil {
+		if strings.Contains(err.Error(), "nothing to commit") {
+			fmt.Fprintln(os.Stderr, "publish-homebrew-formula: formula unchanged, nothing to publish")
+			return nil
+		}
+		return fmt.Errorf("commit formula: %w", err)
+	}
+	if err := runGit(tmpDir, "push", "origin", "HEAD:"+cfg.tapBranch); err != nil {
+		return fmt.Errorf("push formula: %w", err)
+	}
+
+	fmt.Printf("publish-homebrew-formula: published %s to %s/%s@%s\n", cfg.formulaPath, cfg.tapOwner, cfg.tapRepo, cfg.tapBranch)
+	return nil
+}
+
+// redactArgs returns a copy of args with any occurrence of token replaced,
+// so the authenticated clone URL never reaches an error message verbatim.
+func redactArgs(args []string, token string) []string {
+	redacted := make([]string, len(args))
+	for i, a := range args {
+		redacted[i] = strings.ReplaceAll(a, token, "***")
+	}
+	return redacted
+}
