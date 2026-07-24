@@ -171,10 +171,12 @@ var formulaVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A
 
 // WO-143: formulaProjectNamePattern is the strictest allowlist. ProjectName is
 // spliced UNQUOTED into `class <Name> < Formula` (via formulaClassName) and also
-// feeds the archive filename and download URL, so it permits only letters,
-// digits, and hyphens — nothing that could break the class declaration or the
-// shell/URL contexts it flows into.
-var formulaProjectNamePattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+// feeds the archive filename and download URL.
+// WO-148: it must additionally start with a letter and contain only letters and
+// digits (no leading digit, no hyphen), so formulaClassName always yields a
+// syntactically valid Ruby class name — a Ruby constant starts with an
+// uppercase letter and contains only letters and digits here.
+var formulaProjectNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*$`)
 
 // WO-140: validate rejects FormulaInput values that cannot be rendered safely;
 // Version must be clean semver.
@@ -188,7 +190,7 @@ func (in FormulaInput) validate() error {
 		return fmt.Errorf("invalid version %q: expected semver without a leading v (e.g. 1.2.3)", in.Version)
 	}
 	if !formulaProjectNamePattern.MatchString(in.ProjectName) {
-		return fmt.Errorf("invalid project name %q: only letters, digits, and hyphens are allowed", in.ProjectName)
+		return fmt.Errorf("invalid project name %q: must start with a letter and contain only letters and digits", in.ProjectName)
 	}
 	for _, f := range []struct{ name, value string }{
 		{"homepage", in.Homepage},

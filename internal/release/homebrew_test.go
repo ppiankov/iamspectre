@@ -1,6 +1,7 @@
 package release
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -185,6 +186,34 @@ func TestRenderFormulaRejectsProjectNameInjection(t *testing.T) {
 		"iam spectre",
 		"",
 	} {
+		in := testFormulaInput()
+		in.ProjectName = bad
+		if _, err := RenderFormula(in); err == nil {
+			t.Fatalf("expected error for project name %q, got nil", bad)
+		}
+	}
+}
+
+// WO-148: every ProjectName accepted by validate() must yield a syntactically
+// valid Ruby class name once passed through formulaClassName.
+func TestFormulaProjectNameProducesValidClass(t *testing.T) {
+	validRubyClass := regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
+	for _, name := range []string{"iamspectre", "Tool2", "abc"} {
+		in := testFormulaInput()
+		in.ProjectName = name
+		if err := in.validate(); err != nil {
+			t.Fatalf("validate rejected valid project name %q: %v", name, err)
+		}
+		if cn := formulaClassName(name); !validRubyClass.MatchString(cn) {
+			t.Fatalf("project name %q produced invalid Ruby class name %q", name, cn)
+		}
+	}
+}
+
+// WO-148: a leading digit, an embedded hyphen, or an underscore would produce an
+// invalid Ruby class declaration and must be rejected.
+func TestRenderFormulaRejectsInvalidProjectNameShape(t *testing.T) {
+	for _, bad := range []string{"1foo", "9", "foo-bar", "foo_bar"} {
 		in := testFormulaInput()
 		in.ProjectName = bad
 		if _, err := RenderFormula(in); err == nil {
