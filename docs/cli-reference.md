@@ -37,7 +37,7 @@ iamspectre aws [flags]
 | `--region` | SDK/config default | AWS region used for SDK endpoint resolution |
 | `--stale-days` | `90` | Inactivity threshold (days) |
 | `--severity-min` | `low` | Minimum severity: critical, high, medium, low |
-| `--format` | `text` | Output format: text, json, sarif, spectrehub |
+| `--format` | `text` | Output format: text, report, json, sarif, spectrehub |
 | `-o, --output` | stdout | Output file path |
 | `--timeout` | `5m` | Scan timeout |
 | `--include-service-linked-roles` | `false` | Include low-severity unused service-linked roles |
@@ -53,7 +53,7 @@ iamspectre gcp [flags]
 | `--project` | | GCP project ID (required) |
 | `--stale-days` | `90` | Inactivity threshold (days) |
 | `--severity-min` | `low` | Minimum severity: critical, high, medium, low |
-| `--format` | `text` | Output format: text, json, sarif, spectrehub |
+| `--format` | `text` | Output format: text, report, json, sarif, spectrehub |
 | `-o, --output` | stdout | Output file path |
 | `--timeout` | `5m` | Scan timeout |
 
@@ -68,7 +68,7 @@ iamspectre azure [flags]
 | `--tenant` | | Azure tenant ID |
 | `--stale-days` | `90` | Inactivity threshold (days) |
 | `--severity-min` | `low` | Minimum severity: critical, high, medium, low |
-| `--format` | `text` | Output format: text, json, sarif, spectrehub |
+| `--format` | `text` | Output format: text, report, json, sarif, spectrehub |
 | `-o, --output` | stdout | Output file path |
 | `--timeout` | `5m` | Scan timeout |
 | `--include-guests` | `true` | Include guest/external users in audit |
@@ -199,6 +199,8 @@ IAMSpectre requires read-only access. Run `iamspectre init` to generate the mini
 
 **Text** (default): Human-readable table with severity, stable finding ID, resource, and recommendation. The header records the scan timestamp and the active severity-min filter.
 
+**Report** (`--format report`): Customer-deliverable Markdown report with an executive summary, per-finding evidence and full (untruncated) recommendations, a coverage-gap section, and a scope/methodology footer.
+
 **JSON** (`--format json`): `spectre/v1` envelope with findings and summary.
 
 **SARIF** (`--format sarif`): SARIF v2.1.0 for GitHub Security tab integration. Sub-scanner errors are surfaced as SARIF notifications so partial-scan failures are visible to consumers.
@@ -232,7 +234,7 @@ iamspectre/
 │   │   ├── role.go                 # Unused directory roles
 │   │   └── scanner.go              # Azure scanner orchestrator
 │   ├── analyzer/                   # Severity filtering, summary aggregation
-│   └── report/                     # Text, JSON, SARIF, SpectreHub reporters
+│   └── report/                     # Text, Report, JSON, SARIF, SpectreHub reporters
 ├── Makefile
 └── go.mod
 ```
@@ -253,7 +255,7 @@ Key design decisions:
 
 ## Project Status
 
-**Status: Beta** · **v0.1.0** · Pre-1.0
+**Status: Beta** · **v0.6.2** · Pre-1.0
 
 | Milestone | Status |
 |-----------|--------|
