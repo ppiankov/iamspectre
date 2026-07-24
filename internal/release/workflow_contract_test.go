@@ -227,8 +227,16 @@ func TestReleaseWorkflowHomebrewPublishSequencing(t *testing.T) {
 	if publishIndex <= goreleaserIndex {
 		t.Fatalf("release.yml Homebrew publish step (index %d) must run after the goreleaser release step (index %d)", publishIndex, goreleaserIndex)
 	}
-	if !strings.Contains(publishRun, "HOMEBREW_TAP_TOKEN") {
-		t.Fatalf("release.yml Homebrew publish step must fail closed when HOMEBREW_TAP_TOKEN is missing")
+	// WO-138: assert the actual fail-closed control flow, not just that the
+	// token is mentioned — a warn-and-continue regression would still
+	// reference HOMEBREW_TAP_TOKEN but must not pass this test.
+	if !strings.Contains(publishRun, `-z "${HOMEBREW_TAP_TOKEN:-}"`) {
+		t.Fatalf("release.yml Homebrew publish step must guard on an empty HOMEBREW_TAP_TOKEN")
+	}
+	tokenGuardIndex := strings.Index(publishRun, `-z "${HOMEBREW_TAP_TOKEN:-}"`)
+	exitIndex := strings.Index(publishRun[tokenGuardIndex:], "exit 1")
+	if exitIndex == -1 {
+		t.Fatalf("release.yml Homebrew publish step must fail closed (exit 1) when HOMEBREW_TAP_TOKEN is missing")
 	}
 }
 
