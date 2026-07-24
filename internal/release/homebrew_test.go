@@ -256,6 +256,28 @@ func TestRenderFormulaRejectsReservedRubyClassName(t *testing.T) {
 	}
 }
 
+// WO-151: RepoOwner flows into the release-asset download URL, so it must be a
+// GitHub-owner-safe identifier. Assert via validate() directly (not RenderFormula)
+// to avoid the checksum-miss masking class (WO-149).
+func TestRenderFormulaRejectsInvalidRepoOwner(t *testing.T) {
+	for _, bad := range []string{"pp iankov", "ppiankov?", "own%er", "-lead", "trail-", "owner/x", ""} {
+		in := testFormulaInput()
+		in.RepoOwner = bad
+		if err := in.validate(); err == nil {
+			t.Fatalf("expected error for repo owner %q, got nil", bad)
+		}
+	}
+
+	// The default owner (and other valid GitHub owners) must still pass.
+	for _, ok := range []string{"ppiankov", "obsta-labs", "a"} {
+		in := testFormulaInput()
+		in.RepoOwner = ok
+		if err := in.validate(); err != nil {
+			t.Fatalf("validate rejected valid repo owner %q: %v", ok, err)
+		}
+	}
+}
+
 func TestParseChecksums(t *testing.T) {
 	input := "aaaa  iamspectre_1.2.3_darwin_arm64.tar.gz\n" +
 		"bbbb  iamspectre_1.2.3_darwin_amd64.tar.gz\n" +

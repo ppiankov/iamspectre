@@ -191,6 +191,13 @@ var formulaProjectNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*$`)
 // no-op.
 var rubyReservedClassNames = map[string]bool{"BEGIN": true, "END": true}
 
+// WO-151: formulaRepoOwnerPattern constrains RepoOwner to a GitHub-owner-safe
+// identifier. RepoOwner is interpolated into the releases/download/ URL, so a
+// space or other URL-unsafe byte (even though it sits inside a quoted Ruby
+// string) would yield a malformed download URL. GitHub owners are alphanumerics
+// joined by single internal hyphens, with no leading or trailing hyphen.
+var formulaRepoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
+
 // WO-140: validate rejects FormulaInput values that cannot be rendered safely;
 // Version must be clean semver.
 // WO-143: free-text fields now use a positive allowlist (unsafeFormulaStringRune)
@@ -208,11 +215,16 @@ func (in FormulaInput) validate() error {
 	if className := formulaClassName(in.ProjectName); rubyReservedClassNames[className] {
 		return fmt.Errorf("invalid project name %q: capitalizes to the reserved Ruby keyword %q", in.ProjectName, className)
 	}
+	// WO-151: RepoOwner feeds the releases/download/ URL, so constrain it to a
+	// GitHub-owner-safe identifier rather than only the free-text allowlist — a
+	// URL-unsafe-but-graphic value (space, "?", "%") must fail closed.
+	if !formulaRepoOwnerPattern.MatchString(in.RepoOwner) {
+		return fmt.Errorf("invalid repo owner %q: must be a GitHub-owner-safe identifier (letters, digits, internal hyphens)", in.RepoOwner)
+	}
 	for _, f := range []struct{ name, value string }{
 		{"homepage", in.Homepage},
 		{"description", in.Description},
 		{"license", in.License},
-		{"repo owner", in.RepoOwner},
 	} {
 		// WO-147: reject invalid UTF-8 first. strings.IndexFunc decodes bad bytes
 		// to utf8.RuneError (U+FFFD), which is graphic and slips past
