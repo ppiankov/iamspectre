@@ -91,6 +91,44 @@ func TestRenderFormulaMissingChecksum(t *testing.T) {
 	}
 }
 
+// WO-140: an unsafe free-text field must fail closed rather than emit a
+// malformed Ruby string literal.
+func TestRenderFormulaRejectsUnsafeField(t *testing.T) {
+	in := testFormulaInput()
+	in.Description = `auditor" then "injected`
+	if _, err := RenderFormula(in); err == nil {
+		t.Fatal("expected error for description containing a double-quote, got nil")
+	}
+
+	in = testFormulaInput()
+	in.Homepage = "https://example.com/\nmalicious"
+	if _, err := RenderFormula(in); err == nil {
+		t.Fatal("expected error for homepage containing a newline, got nil")
+	}
+}
+
+// WO-140: an invalid version must fail closed and name the offending value,
+// because it also feeds the releases/download/v<version>/ URL path.
+func TestRenderFormulaRejectsInvalidVersion(t *testing.T) {
+	in := testFormulaInput()
+	in.Version = "1.2.3 bad"
+	_, err := RenderFormula(in)
+	if err == nil {
+		t.Fatal("expected error for invalid version, got nil")
+	}
+	if !strings.Contains(err.Error(), "1.2.3 bad") {
+		t.Fatalf("error = %q, want it to name the offending version", err.Error())
+	}
+
+	// A version carrying a double-quote must also fail closed — it would break
+	// both the Ruby `version` string and the download URL.
+	in = testFormulaInput()
+	in.Version = `1.2.3"`
+	if _, err := RenderFormula(in); err == nil {
+		t.Fatal("expected error for version containing a double-quote, got nil")
+	}
+}
+
 func TestParseChecksums(t *testing.T) {
 	input := "aaaa  iamspectre_1.2.3_darwin_arm64.tar.gz\n" +
 		"bbbb  iamspectre_1.2.3_darwin_amd64.tar.gz\n" +

@@ -5,6 +5,7 @@ package release
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -82,6 +83,13 @@ end
 // macOS/Linux amd64/arm64 archives. It fails closed: every archive must have
 // a matching checksum, or no formula is produced.
 func RenderFormula(in FormulaInput) (string, error) {
+	// WO-140: fail closed on inputs that would break the rendered Ruby string
+	// literals or the releases/download/v<version>/ URL path — text/template
+	// performs no Ruby-context escaping, so validation is the only guard.
+	if err := in.validate(); err != nil {
+		return "", err
+	}
+
 	archiveFile := func(goos, goarch string) string {
 		return fmt.Sprintf("%s_%s_%s_%s.tar.gz", in.ProjectName, in.Version, goos, goarch)
 	}
@@ -152,6 +160,41 @@ func formulaClassName(projectName string) string {
 		return projectName
 	}
 	return strings.ToUpper(projectName[:1]) + projectName[1:]
+}
+
+// WO-140: formulaVersionPattern accepts a leading-"v"-stripped semver. A
+// version outside this shape could inject characters into the Ruby `version`
+// string or, worse, into the releases/download/v<version>/ download URL.
+var formulaVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+// WO-140: validate rejects FormulaInput values that cannot be rendered safely.
+// Version must be clean semver; every free-text field interpolated into a Ruby
+// double-quoted string must be free of quotes, backslashes, and control
+// characters. It fails closed with an error naming the offending value rather
+// than emitting a malformed Formula.
+func (in FormulaInput) validate() error {
+	if !formulaVersionPattern.MatchString(in.Version) {
+		return fmt.Errorf("invalid version %q: expected semver without a leading v (e.g. 1.2.3)", in.Version)
+	}
+	for _, f := range []struct{ name, value string }{
+		{"project name", in.ProjectName},
+		{"homepage", in.Homepage},
+		{"description", in.Description},
+		{"license", in.License},
+		{"repo owner", in.RepoOwner},
+	} {
+		if strings.IndexFunc(f.value, unsafeFormulaRune) >= 0 {
+			return fmt.Errorf("invalid %s %q: contains a character that cannot be safely rendered into the Formula", f.name, f.value)
+		}
+	}
+	return nil
+}
+
+// WO-140: unsafeFormulaRune reports runes that would break a Ruby
+// double-quoted string literal — a double-quote, a backslash, or any control
+// character (newlines and the DEL byte included).
+func unsafeFormulaRune(r rune) bool {
+	return r == '"' || r == '\\' || r < 0x20 || r == 0x7f
 }
 
 // ParseChecksums parses GoReleaser's checksums.txt format
