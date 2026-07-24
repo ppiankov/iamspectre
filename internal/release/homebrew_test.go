@@ -111,9 +111,12 @@ func TestRenderFormulaRejectsUnsafeField(t *testing.T) {
 // WO-140: an invalid version must fail closed and name the offending value,
 // because it also feeds the releases/download/v<version>/ URL path.
 func TestRenderFormulaRejectsInvalidVersion(t *testing.T) {
+	// WO-150: assert on validate() directly. RenderFormula would also error via a
+	// checksum miss on the bad-version archive filename, masking whether the
+	// version-pattern check actually fired.
 	in := testFormulaInput()
 	in.Version = "1.2.3 bad"
-	_, err := RenderFormula(in)
+	err := in.validate()
 	if err == nil {
 		t.Fatal("expected error for invalid version, got nil")
 	}
@@ -125,7 +128,7 @@ func TestRenderFormulaRejectsInvalidVersion(t *testing.T) {
 	// both the Ruby `version` string and the download URL.
 	in = testFormulaInput()
 	in.Version = `1.2.3"`
-	if _, err := RenderFormula(in); err == nil {
+	if err := in.validate(); err == nil {
 		t.Fatal("expected error for version containing a double-quote, got nil")
 	}
 }
