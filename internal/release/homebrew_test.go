@@ -216,7 +216,10 @@ func TestRenderFormulaRejectsInvalidProjectNameShape(t *testing.T) {
 	for _, bad := range []string{"1foo", "9", "foo-bar", "foo_bar"} {
 		in := testFormulaInput()
 		in.ProjectName = bad
-		if _, err := RenderFormula(in); err == nil {
+		// WO-149: call validate() directly. RenderFormula would also error via a
+		// checksum miss on the bad-name archive filename, which would mask whether
+		// the shape check actually fired.
+		if err := in.validate(); err == nil {
 			t.Fatalf("expected error for project name %q, got nil", bad)
 		}
 	}
@@ -232,7 +235,9 @@ func TestRenderFormulaRejectsReservedRubyClassName(t *testing.T) {
 	for _, bad := range []string{"BEGIN", "END", "bEGIN"} {
 		in := testFormulaInput()
 		in.ProjectName = bad
-		if _, err := RenderFormula(in); err == nil {
+		// WO-149: call validate() directly so the reserved-keyword check is what
+		// rejects the input, not a downstream checksum miss on the bad-name archive.
+		if err := in.validate(); err == nil {
 			t.Fatalf("expected error for reserved-keyword project name %q, got nil", bad)
 		}
 	}
