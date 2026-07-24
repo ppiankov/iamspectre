@@ -203,7 +203,13 @@ func TestReleaseWorkflowHomebrewPublishSequencing(t *testing.T) {
 	}
 
 	goreleaserIndex, publishIndex := -1, -1
+	publishMatches := 0
 	var publishRun string
+	// WO-144: match the actual publish invocation, not the bare
+	// "cmd/publish-homebrew-formula" substring — that also appears in the WO-142
+	// "Verify Homebrew publisher compiles" build step, so the old substring
+	// matched two steps and only worked by last-write-wins step order.
+	const publishNeedle = "go run ./cmd/publish-homebrew-formula"
 	for index, stepValue := range steps {
 		step, ok := stepValue.(map[string]any)
 		if !ok {
@@ -213,16 +219,19 @@ func TestReleaseWorkflowHomebrewPublishSequencing(t *testing.T) {
 		if strings.Contains(run, "goreleaser release --clean") {
 			goreleaserIndex = index
 		}
-		if strings.Contains(run, "cmd/publish-homebrew-formula") {
+		if strings.Contains(run, publishNeedle) {
 			publishIndex = index
 			publishRun = run
+			publishMatches++
 		}
 	}
 	if goreleaserIndex == -1 {
 		t.Fatalf("release.yml missing goreleaser release step")
 	}
-	if publishIndex == -1 {
-		t.Fatalf("release.yml missing Homebrew formula publish step")
+	// WO-144: exactly one step must run the publisher, so a future ambiguous
+	// match fails the test instead of being silently resolved by step order.
+	if publishMatches != 1 {
+		t.Fatalf("release.yml expected exactly one step matching %q, got %d", publishNeedle, publishMatches)
 	}
 	if publishIndex <= goreleaserIndex {
 		t.Fatalf("release.yml Homebrew publish step (index %d) must run after the goreleaser release step (index %d)", publishIndex, goreleaserIndex)
